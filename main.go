@@ -19,6 +19,8 @@ package main
 #cgo CFLAGS: -I${SRCDIR}/libsurvive/include -I${SRCDIR}/libsurvive/include/libsurvive -I${SRCDIR}/libsurvive/include/libsurvive/redist -DSURVIVE_ENABLE_FULL_API
 #cgo LDFLAGS: -L${SRCDIR}/libsurvive/lib -lsurvive -Wl,-rpath,${SRCDIR}/libsurvive/lib
 #include <survive_api.h>
+#include <survive.h>
+#include <linmath.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -180,6 +182,22 @@ static void vr_haptic(const char *name, float amplitude, float duration_s) {
     if (rc != 0) {
         printf("[haptic] %s failed: %d\n", name, rc);
     }
+}
+
+// vr_frame_up_z returns the Z-component of the lighthouse "up" vector
+// transformed into the world frame. Positive = Z-up (correct).
+// Negative = Z-flipped. Returns 0 if no lighthouse data available.
+static float vr_frame_up_z(void) {
+    if (!gCtx) return 0;
+    SurviveContext *ctx = survive_simple_get_ctx(gCtx);
+    if (!ctx) return 0;
+    for (int i = 0; i < NUM_GEN2_LIGHTHOUSES; i++) {
+        if (!ctx->bsd[i].PositionSet) continue;
+        FLT worldUp[3];
+        quatrotatevector(worldUp, ctx->bsd[i].Pose.Rot, ctx->bsd[i].accel);
+        return (float)worldUp[2];
+    }
+    return 0;
 }
 */
 import "C"
@@ -1225,6 +1243,7 @@ func pollLoop(ctx context.Context, hz int, calibDir, pluginLib, leftCtrl, rightC
 
 	var leftName, rightName *string
 	var wasLeftTrackpad, wasRightTrackpad bool
+	var frameChecked bool
 	lastScan := time.Time{}
 	vrOK := initVR(pluginLib) == 0
 	if vrOK {
@@ -1240,6 +1259,19 @@ func pollLoop(ctx context.Context, hz int, calibDir, pluginLib, leftCtrl, rightC
 			if !vrOK && initVR(pluginLib) == 0 {
 				vrOK = true
 				fmt.Println("[teleop] libsurvive initialized")
+			}
+			// Check frame orientation once after libsurvive solves base station positions.
+			if vrOK && !frameChecked {
+				upZ := float64(C.vr_frame_up_z())
+				if upZ != 0 {
+					frameChecked = true
+					if upZ < 0 {
+						fmt.Printf("[teleop] WARNING: frame Z-flip detected (upZ=%.2f), applying 180° X correction\n", upZ)
+						lighthouseTransform = mgl64.HomogRotate3DX(math.Pi).Mul4(lighthouseTransform)
+					} else {
+						fmt.Printf("[teleop] frame orientation OK (upZ=%.2f)\n", upZ)
+					}
+				}
 			}
 			leftName, rightName = findControllers(leftCtrl, rightCtrl, calibDir)
 			if left != nil {

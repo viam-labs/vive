@@ -36,6 +36,16 @@ $(BIN): $(LIBSURVIVE_LIB) Makefile go.mod *.go
 
 build: $(BIN)
 
+recalibrate: $(BIN)
+	@if [ -f ~/.config/libsurvive/config.json ]; then \
+		cp ~/.config/libsurvive/config.json ~/.config/libsurvive/config.json.bak; \
+		rm ~/.config/libsurvive/config.json; \
+		echo "Cleared libsurvive config (backup: config.json.bak)"; \
+	fi
+	@rm -f calibration.json
+	@echo "Cleared calibration.json — recalibrate forward direction with trackpad-up gesture"
+	$(MAKE) dev
+
 dev: $(BIN)
 	GOTRACEBACK=crash ./$(BIN) --hz $(HZ) \
 		--address $(VIAM_ADDRESS) --key-id $(VIAM_KEY_ID) --key $(VIAM_KEY) \
@@ -71,4 +81,4 @@ lint:
 clean:
 	rm -rf $(LIBSURVIVE_DIR) $(LIBSURVIVE_SRC) $(BIN)
 
-.PHONY: build dev pair test setup update lint clean
+.PHONY: build dev recalibrate pair test setup update lint clean
