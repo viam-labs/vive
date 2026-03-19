@@ -169,9 +169,17 @@ static VRControllerData vr_get_controller_by_name(const char *name) {
 }
 
 static void vr_haptic(const char *name, float amplitude, float duration_s) {
-    // TODO: haptics disabled — survive_simple_object_haptic may crash on macOS HIDAPI backend.
-    // Re-enable after upstream fix or investigation.
-    (void)name; (void)amplitude; (void)duration_s;
+    if (!gCtx || !name) return;
+    if (!survive_simple_is_running(gCtx)) return;
+
+    SurviveSimpleObject *obj = survive_simple_get_object(gCtx, name);
+    if (!obj) return;
+
+    // 160 Hz is the standard Vive wand LRA motor frequency.
+    int rc = survive_simple_object_haptic(obj, 160.0, (FLT)amplitude, (FLT)duration_s);
+    if (rc != 0) {
+        printf("[haptic] %s failed: %d\n", name, rc);
+    }
 }
 */
 import "C"
