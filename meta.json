@@ -1,0 +1,35 @@
+{
+  "$schema": "https://dl.viam.dev/module.schema.json",
+  "module_id": "viam:vive",
+  "visibility": "public",
+  "url": "https://github.com/viam-labs/vive",
+  "description": "HTC Vive VR controller tracking and arm teleop for Viam robots",
+  "models": [
+    {
+      "api": "rdk:component:input_controller",
+      "model": "viam:vive:vive-controller",
+      "markdown_link": "README.md#configure-vive-controller",
+      "short_description": "HTC Vive wand controller with 6DOF tracking, buttons, and haptics"
+    },
+    {
+      "api": "rdk:service:generic",
+      "model": "viam:vive:teleop",
+      "markdown_link": "README.md#configure-teleop-service",
+      "short_description": "VR arm teleop service with dual-hand support"
+    }
+  ],
+  "markdown_link": "README.md",
+  "entrypoint": "bin/vive",
+  "first_run": "",
+  "build": {
+    "build": "make module.tar.gz",
+    "setup": "make setup",
+    "path": "module.tar.gz",
+    "arch": [
+      "linux/amd64",
+      "linux/arm64",
+      "darwin/arm64",
+      "windows/amd64"
+    ]
+  }
+}

@@ -28,8 +28,14 @@ go.work.sum
 libsurvive/
 libsurvive-src/
 
-# Built binary
+# Built binaries
 vr-teleop
+bin/
+*.tar.gz
+
+# Viam reload files
+.VIAM_RELOAD_ARCHIVE.tar.gz
+reload-*/
 
 # Teleop session logs
 teleop_*.jsonl

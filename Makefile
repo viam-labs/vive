@@ -1,4 +1,6 @@
-BIN := vr-teleop
+MODULE_BINARY := bin/vive
+CLI_BINARY := bin/vive-cli
+
 LIBSURVIVE_REPO ?= https://github.com/viam-labs/libsurvive.git
 LIBSURVIVE_REF  ?= viam-patches
 LIBSURVIVE_DIR  := libsurvive
@@ -16,11 +18,11 @@ endif
 export
 
 HZ ?= 90
-POS_DEADZONE ?= 3.0
-ROT_DEADZONE ?= 3.0
-# SMOOTH_ALPHA ?= 1.0
-SMOOTH_ALPHA ?= 0.1
+POS_DEADZONE ?= 0.5
+ROT_DEADZONE ?= 1.0
+SMOOTH_ALPHA ?= 0.5
 
+# Build libsurvive from source (first time only)
 $(LIBSURVIVE_LIB):
 	@[ -d $(LIBSURVIVE_SRC) ] || git clone --depth 1 --recurse-submodules --branch $(LIBSURVIVE_REF) $(LIBSURVIVE_REPO) $(LIBSURVIVE_SRC)
 	cd $(LIBSURVIVE_SRC) && mkdir -p build && cd build && \
@@ -31,12 +33,27 @@ $(LIBSURVIVE_LIB):
 		[ -f "$$f" ] && ln -sf "$$(basename $$f)" "$${f%.dylib}.so"; \
 	done 2>/dev/null; true
 
-$(BIN): $(LIBSURVIVE_LIB) Makefile go.mod *.go
-	go build -o $@ .
+# Module binary (for Viam module deployment)
+$(MODULE_BINARY): $(LIBSURVIVE_LIB) Makefile go.mod *.go survive/*.go cmd/module/*.go
+	go build -o $(MODULE_BINARY) ./cmd/module
 
-build: $(BIN)
+# CLI binary (for remote development/testing)
+$(CLI_BINARY): $(LIBSURVIVE_LIB) Makefile go.mod *.go survive/*.go cmd/cli/*.go
+	go build -o $(CLI_BINARY) ./cmd/cli
 
-recalibrate: $(BIN)
+build: $(MODULE_BINARY) $(CLI_BINARY)
+
+# Run CLI with env vars from .env
+dev: $(CLI_BINARY)
+	GOTRACEBACK=crash ./$(CLI_BINARY) \
+		--address $(VIAM_ADDRESS) --key-id $(VIAM_KEY_ID) --key $(VIAM_KEY) \
+		--hz $(HZ) \
+		--left-arm $(LEFT_ARM) --left-gripper $(LEFT_GRIPPER) \
+		--right-arm $(RIGHT_ARM) --right-gripper $(RIGHT_GRIPPER) \
+		--pos-deadzone $(POS_DEADZONE) --rot-deadzone $(ROT_DEADZONE) \
+		--smooth-alpha $(SMOOTH_ALPHA)
+
+recalibrate:
 	@if [ -f ~/.config/libsurvive/config.json ]; then \
 		cp ~/.config/libsurvive/config.json ~/.config/libsurvive/config.json.bak; \
 		rm ~/.config/libsurvive/config.json; \
@@ -46,19 +63,16 @@ recalibrate: $(BIN)
 	@echo "Cleared calibration.json — recalibrate forward direction with trackpad-up gesture"
 	$(MAKE) dev
 
-dev: $(BIN)
-	GOTRACEBACK=crash ./$(BIN) --hz $(HZ) \
-		--address $(VIAM_ADDRESS) --key-id $(VIAM_KEY_ID) --key $(VIAM_KEY) \
-		--left-arm $(LEFT_ARM) --left-gripper $(LEFT_GRIPPER) \
-		--right-arm $(RIGHT_ARM) --right-gripper $(RIGHT_GRIPPER) \
-		--pos-deadzone $(POS_DEADZONE) --rot-deadzone $(ROT_DEADZONE) \
-		--smooth-alpha $(SMOOTH_ALPHA)
-
 pair: $(LIBSURVIVE_LIB)
 	@echo 'Plug in both Watchman dongles, then power on each controller one at a time.'
 	@echo 'Press Ctrl-C when both controllers are paired.'
 	DYLD_LIBRARY_PATH=$(CURDIR)/$(LIBSURVIVE_DIR)/lib LD_LIBRARY_PATH=$(CURDIR)/$(LIBSURVIVE_DIR)/lib \
 		$(LIBSURVIVE_DIR)/bin/survive-cli --pair-device
+
+module.tar.gz: meta.json $(MODULE_BINARY)
+	tar czf $@ meta.json $(MODULE_BINARY) $(LIBSURVIVE_DIR)/lib
+
+module: test module.tar.gz
 
 test:
 	go test ./...
@@ -79,6 +93,6 @@ lint:
 	gofmt -s -w .
 
 clean:
-	rm -rf $(LIBSURVIVE_DIR) $(LIBSURVIVE_SRC) $(BIN)
+	rm -rf $(LIBSURVIVE_DIR) $(LIBSURVIVE_SRC) bin/ module.tar.gz
 
-.PHONY: build dev recalibrate pair test setup update lint clean
+.PHONY: build dev recalibrate pair module test setup update lint clean

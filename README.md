@@ -1,100 +1,209 @@
-# VR Teleop
+# Vive Module
 
-Reads HTC Vive controller poses and button states via [libsurvive](https://github.com/cntools/libsurvive) and sends arm/gripper commands to a Viam robot at ~90 Hz. No SteamVR, frontend, or WebSocket required.
+HTC Vive VR controller tracking and arm teleop for Viam robots. Uses [libsurvive](https://github.com/cntools/libsurvive) — no SteamVR required.
 
 ## Hardware
 
-- **Watchman VR Dongles** — USB receivers for the controllers (one per controller)
-- **Lighthouse Base Stations (1.0 or 2.0)** — at least two for full room-scale tracking
-- **Vive 2.0 Controllers** — one per arm
+- HTC Vive 2.0 Controllers (one per arm)
+- Watchman VR USB Dongles (one per controller)
+- Lighthouse Base Stations (v1.0 or v2.0, at least two)
+
+## Configure vive-controller
+
+```jsonc
+{
+  "name": "left-vive",
+  "api": "rdk:component:input_controller",
+  "model": "viam:vive:vive-controller",
+  "attributes": {
+    // Serial number of the physical controller (stable across restarts).
+    // Optional — if omitted, controllers are assigned in discovery order.
+    "serial_number": "LHR-FEC592B1"
+  }
+}
+```
 
 ### Controls
 
-- **Trigger** — proportional gripper control. Gripper position mirrors trigger pull.
+| Control | Type | Description |
+|---------|------|-------------|
+| `AbsoluteX` | axis | Trackpad X position |
+| `AbsoluteY` | axis | Trackpad Y position |
+| `AbsoluteZ` | axis | Trigger (0–1) |
+| `ButtonSouth` | button | Trackpad press |
+| `ButtonLT` | button | Grip |
+| `ButtonMenu` | button | Menu |
+
+### DoCommand
+
+**Get 6DOF pose:**
+
+```json
+{"get_pose": true}
+```
+
+Returns:
+
+```json
+{"valid": true, "position": [x, y, z], "matrix": [[16 floats]]}
+```
+
+**Trigger haptic feedback:**
+
+```json
+{"haptic": {"amplitude": 0.5, "duration_ms": 100}}
+```
+
+**Get controller status:**
+
+```json
+{"status": true}
+```
+
+Returns:
+
+```json
+{"device_name": "WM0", "serial": "LHR-FEC592B1", "connected": true, "pose_valid": true}
+```
+
+## Configure teleop service
+
+```jsonc
+{
+  "name": "teleop",
+  "api": "rdk:service:generic",
+  "model": "viam:vive:teleop",
+  "attributes": {
+    // Polling rate in Hz (default: 90)
+    "hz": 90,
+    "hands": [
+      {
+        "name": "left",
+        // Name of the vive-controller component
+        "controller": "left-vive",
+        // Name of the arm component to control
+        "arm": "right-arm",
+        // Name of the gripper component (optional)
+        "gripper": "right-gripper",
+        // Position multiplier (default: 1.0). 2.0 = arm moves 2x your hand movement.
+        "scale": 1.0,
+        // Enable orientation tracking (default: true)
+        "rotation_enabled": true,
+        // Position dead-zone in mm (default: 0.5). Suppresses jitter.
+        "pos_deadzone_mm": 0.5,
+        // Rotation dead-zone in degrees (default: 1.0)
+        "rot_deadzone_deg": 1.0,
+        // EMA smoothing alpha, 0–1 (default: 0.5). Lower = smoother, higher = more responsive.
+        "smooth_alpha": 0.5
+      },
+      {
+        "name": "right",
+        "controller": "right-vive",
+        "arm": "left-arm",
+        "gripper": "left-gripper"
+      }
+    ],
+    // Directory for calibration/controller map files (default: executable directory)
+    "calibration_dir": "/data"
+  }
+}
+```
+
+### VR Controls
+
 - **Grip** — deadman's switch. Arm moves only while held.
-- **Menu** — returns arm to previous start pose. Each press steps further back.
+- **Trigger** — proportional gripper control. Mirrors trigger pull.
+- **Menu** — returns arm to previous start pose.
 - **Trackpad up** — recalibrate forward direction to current controller heading.
 - **Trackpad down** — toggle absolute/relative rotation tracking.
 
-## Software Requirements
+### DoCommand
 
-- Go 1.21+
-- Linux (libsurvive requires direct USB access to Lighthouse hardware)
-- cmake, libusb-1.0-dev, zlib1g-dev (for building libsurvive)
-- A Viam robot with arm and (optionally) gripper components
+**Calibrate forward direction:**
 
-On Debian/Ubuntu:
-
-```sh
-sudo apt install cmake libusb-1.0-0-dev zlib1g-dev
+```json
+{"calibrate": true}
 ```
 
-### USB permissions
+**Get teleop status:**
 
-libsurvive accesses Vive hardware directly via USB.
-
-**Linux** — add udev rules (one-time):
-
-```sh
-sudo cp libsurvive-src/useful_files/81-vive.rules /etc/udev/rules.d/
-sudo udevadm control --reload-rules && sudo udevadm trigger
+```json
+{"status": true}
 ```
 
-**macOS** — run with `sudo` (USB device access requires root).
+Returns:
 
-### Pairing controllers
-
-Each Watchman USB dongle must be paired to a controller (one-time, stored in dongle firmware). Plug in both dongles, then:
-
-```sh
-sudo make pair
+```json
+{"hands": [{"name": "left", "controlling": false, "teleop_active": false}]}
 ```
 
-Power on each controller one at a time and wait for it to pair. Press Ctrl-C when done.
+**Toggle rotation mode:**
 
-## Setup
-
-```sh
-make setup   # go mod tidy
-make build   # builds libsurvive (first time only) + binary
+```json
+{"toggle_rotation_mode": true}
 ```
 
-After that, `make build` only rebuilds when sources change.
+Returns:
 
-## Run
+```json
+{"rotation_mode": "absolute"}
+```
+
+**List tracked controllers:**
+
+```json
+{"list_controllers": true}
+```
+
+Returns all libsurvive tracked objects with serial numbers and assignment status.
+
+**Assign controller to hand:**
+
+```json
+{"assign": {"serial": "LHR-FEC592B1", "hand": "left"}}
+```
+
+Manually assigns a controller by serial number. Persists to `controller_map.json`.
+
+**Start dongle pairing:**
+
+```json
+{"pair_mode": true}
+```
+
+Starts the Watchman dongle pairing flow. Power on each controller one at a time during pairing.
+
+## Getting Started
+
+### 1. Install dependencies
 
 ```sh
-cp .env.example .env   # fill in your credentials
+make setup
+```
+
+### 2. Build
+
+```sh
+make build
+```
+
+Builds libsurvive from source (first time only) and compiles both binaries.
+
+### 3. Pair controllers
+
+Plug in Watchman dongles, then either:
+- Use the `pair_mode` DoCommand from the Viam app, or
+- Run `make pair` from the command line
+
+### 4. Configure
+
+Add the module, two `vive-controller` components, and one `teleop` service to your robot config (see examples above).
+
+### CLI Mode
+
+For development/testing, you can run the standalone CLI that connects to a remote robot:
+
+```sh
+cp .env.example .env   # fill in credentials
 make dev
 ```
-
-Or run the binary directly:
-
-```sh
-./vr-teleop --address <machine-address> --key-id <key-id> --key <key>
-```
-
-### Flags
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--address` | (required) | Viam machine address |
-| `--key-id` | | Viam API key ID |
-| `--key` | | Viam API key |
-| `--hz` | `90` | Polling rate in Hz |
-| `--left-arm` | `right-arm` | Arm controlled by the left controller |
-| `--right-arm` | `left-arm` | Arm controlled by the right controller |
-| `--left-gripper` | `right-gripper` | Gripper controlled by the left controller (empty to disable) |
-| `--right-gripper` | `left-gripper` | Gripper controlled by the right controller (empty to disable) |
-| `--left-controller` | (auto) | libsurvive object name for left controller (e.g. `WM0`) |
-| `--right-controller` | (auto) | libsurvive object name for right controller (e.g. `WM1`) |
-| `--scale` | `1.0` | Position scale factor (0.1–3.0) |
-| `--rotation` | `true` | Enable orientation tracking |
-
-### Controller assignment
-
-libsurvive names controllers as `WM0`, `WM1`, etc. By default the first two discovered controllers are assigned left/right automatically. If they're swapped, use `--left-controller` and `--right-controller` to specify explicitly.
-
-## Configuration
-
-Copy `.env.example` to `.env` and fill in your Viam credentials and arm/gripper mappings. This file is gitignored.
