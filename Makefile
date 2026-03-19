@@ -9,8 +9,9 @@ LIBSURVIVE_LIB  := $(LIBSURVIVE_DIR)/lib/libsurvive.so
 
 # On macOS, help cmake find homebrew packages and use HIDAPI backend
 CMAKE_EXTRA :=
-ifneq ($(wildcard /opt/homebrew),)
-  CMAKE_EXTRA += -DCMAKE_PREFIX_PATH=/opt/homebrew -DLIBUSB_LIBRARY=/opt/homebrew/lib/libusb-1.0.dylib -DUSE_HIDAPI=ON
+BREW_PREFIX := $(shell brew --prefix 2>/dev/null)
+ifneq ($(BREW_PREFIX),)
+  CMAKE_EXTRA += -DCMAKE_PREFIX_PATH=$(BREW_PREFIX) -DLIBUSB_LIBRARY=$(BREW_PREFIX)/lib/libusb-1.0.dylib -DUSE_HIDAPI=ON
   LIBSURVIVE_LIB := $(LIBSURVIVE_DIR)/lib/libsurvive.dylib
 endif
 
