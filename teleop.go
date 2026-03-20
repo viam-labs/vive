@@ -98,6 +98,9 @@ type teleopService struct {
 	calibYaw float64
 	calibSet bool
 	calibDir string
+
+	// frameChecked tracks whether pollLoop has verified base station frame orientation.
+	frameChecked atomic.Bool
 }
 
 type teleopHand struct {
@@ -449,6 +452,54 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 		return map[string]interface{}{"paired": true}, nil
 	}
 
+	if _, ok := cmd["recalibrate"]; ok {
+		svc.logger.Info("Recalibrating: clearing libsurvive base station cache and restarting tracking...")
+
+		// Stop any active teleop hands.
+		for _, h := range svc.hands {
+			if h.teleopActive {
+				h.stopTeleop(ctx)
+			}
+		}
+
+		// Release libsurvive (same pattern as pair_mode).
+		for range svc.hands {
+			survive.Release()
+		}
+
+		// Delete libsurvive cached base station config.
+		homeDir, _ := os.UserHomeDir()
+		lsConfig := filepath.Join(homeDir, ".config", "libsurvive", "config.json")
+		if err := os.Remove(lsConfig); err != nil && !os.IsNotExist(err) {
+			svc.logger.Warnf("Failed to remove libsurvive config: %v", err)
+		}
+
+		// Clear yaw calibration.
+		svc.calibMu.Lock()
+		svc.calibYaw = 0
+		svc.calibSet = false
+		svc.calibMu.Unlock()
+		calibPath := filepath.Join(svc.calibDir, "calibration.json")
+		os.Remove(calibPath)
+
+		// Re-acquire libsurvive (re-solves base station geometry).
+		exePath, _ := os.Executable()
+		pluginLib := filepath.Join(filepath.Dir(exePath), "libsurvive", "lib", "libsurvive.so")
+		if _, statErr := os.Stat(pluginLib); statErr != nil {
+			pluginLib = filepath.Join(filepath.Dir(exePath), "libsurvive", "lib", "libsurvive.dylib")
+		}
+		for range svc.hands {
+			_ = survive.Acquire(pluginLib)
+		}
+
+		// Reset discovery and frame-check state so poll loop re-discovers controllers and re-checks frame.
+		svc.controllersAssigned = false
+		svc.frameChecked.Store(false)
+
+		svc.logger.Info("Recalibration complete — base stations will re-solve. Use 'calibrate' or trackpad-up to set forward direction.")
+		return map[string]interface{}{"recalibrated": true}, nil
+	}
+
 	return nil, fmt.Errorf("unknown command: %v", cmd)
 }
 
@@ -691,7 +742,6 @@ func (svc *teleopService) pollLoop(ctx context.Context, hz int) {
 	interval := time.Duration(float64(time.Second) / float64(hz))
 	svc.logger.Infof("Polling at %d Hz (%.1f ms)", hz, float64(interval)/float64(time.Millisecond))
 
-	var frameChecked bool
 	lastScan := time.Time{}
 
 	for {
@@ -700,10 +750,10 @@ func (svc *teleopService) pollLoop(ctx context.Context, hz int) {
 		// Periodic device scan (every 2s).
 		if time.Since(lastScan) > 2*time.Second {
 			// Check frame orientation once after libsurvive solves base station positions.
-			if !frameChecked {
+			if !svc.frameChecked.Load() {
 				upZ := survive.FrameUpZ()
 				if upZ != 0 {
-					frameChecked = true
+					svc.frameChecked.Store(true)
 					if upZ < 0 {
 						svc.logger.Warnf("Frame Z-flip detected (upZ=%.2f), applying 180° X correction", upZ)
 						LighthouseTransform = mgl64.HomogRotate3DX(math.Pi).Mul4(LighthouseTransform)

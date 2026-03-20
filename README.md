@@ -118,6 +118,14 @@ Returns:
 {"calibrate": true}
 ```
 
+**Recalibrate base stations:**
+
+```json
+{"recalibrate": true}
+```
+
+Clears cached base station positions and restarts tracking. Use this after a base station is bumped or moved — tracking will be incorrect until recalibrated. After base stations re-solve (~5s), use `calibrate` or trackpad-up to set the forward direction.
+
 **Get teleop status:**
 
 ```json
@@ -165,6 +173,11 @@ Manually assigns a controller by serial number. Persists to `controller_map.json
 ```
 
 Starts the Watchman dongle pairing flow. Power on each controller one at a time during pairing.
+
+### Troubleshooting
+
+**Base station bumped / tracking is wrong:**
+Run the `recalibrate` DoCommand to clear cached base station geometry and restart tracking. After ~5 seconds, recalibrate the forward direction with trackpad-up or `{"calibrate": true}`.
 
 ## Getting Started
 
