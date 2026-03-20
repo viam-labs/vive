@@ -101,6 +101,10 @@ type teleopService struct {
 
 	// frameChecked tracks whether pollLoop has verified base station frame orientation.
 	frameChecked atomic.Bool
+
+	// surviveMu guards libsurvive access during recalibration/pairing to prevent
+	// the poll loop from calling into a destroyed context.
+	surviveMu sync.Mutex
 }
 
 type teleopHand struct {
@@ -422,6 +426,9 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 
 		svc.logger.Info("Starting dongle pairing mode...")
 
+		// Lock out the poll loop while libsurvive is released.
+		svc.surviveMu.Lock()
+
 		// Release libsurvive so survive-cli can take over USB devices.
 		for range svc.hands {
 			survive.Release()
@@ -443,6 +450,7 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 		for range svc.hands {
 			_ = survive.Acquire(pluginLib)
 		}
+		svc.surviveMu.Unlock()
 		svc.controllersAssigned = false
 
 		if err != nil {
@@ -461,6 +469,9 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 				h.stopTeleop(ctx)
 			}
 		}
+
+		// Lock out the poll loop while we tear down and reinit libsurvive.
+		svc.surviveMu.Lock()
 
 		// Release libsurvive (same pattern as pair_mode).
 		for range svc.hands {
@@ -491,6 +502,8 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 		for range svc.hands {
 			_ = survive.Acquire(pluginLib)
 		}
+
+		svc.surviveMu.Unlock()
 
 		// Reset discovery and frame-check state so poll loop re-discovers controllers and re-checks frame.
 		svc.controllersAssigned = false
@@ -747,6 +760,12 @@ func (svc *teleopService) pollLoop(ctx context.Context, hz int) {
 	for {
 		start := time.Now()
 
+		// Skip this iteration if libsurvive is being restarted (recalibrate/pair).
+		if !svc.surviveMu.TryLock() {
+			time.Sleep(interval)
+			continue
+		}
+
 		// Periodic device scan (every 2s).
 		if time.Since(lastScan) > 2*time.Second {
 			// Check frame orientation once after libsurvive solves base station positions.
@@ -767,6 +786,7 @@ func (svc *teleopService) pollLoop(ctx context.Context, hz int) {
 		}
 
 		survive.PollEvents()
+		svc.surviveMu.Unlock()
 
 		for _, h := range svc.hands {
 			cs := h.controller.UpdateState()
