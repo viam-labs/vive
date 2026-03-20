@@ -238,15 +238,15 @@ func NewTeleopService(ctx context.Context, deps resource.Dependencies, name reso
 		}
 		posDeadzone := hc.PosDeadzoneMM
 		if posDeadzone <= 0 {
-			posDeadzone = 0.5
+			posDeadzone = 2.0
 		}
 		rotDeadzone := hc.RotDeadzoneDeg
 		if rotDeadzone <= 0 {
-			rotDeadzone = 1.0
+			rotDeadzone = 2.0
 		}
 		smoothAlpha := hc.SmoothAlpha
 		if smoothAlpha <= 0 {
-			smoothAlpha = 0.5
+			smoothAlpha = 0.2
 		}
 
 		h := &teleopHand{

@@ -78,9 +78,9 @@ Returns:
       "gripper": "right-gripper",
       "scale": 1.0,
       "rotation_enabled": true,
-      "pos_deadzone_mm": 0.5,
-      "rot_deadzone_deg": 1.0,
-      "smooth_alpha": 0.5
+      "pos_deadzone_mm": 2,
+      "rot_deadzone_deg": 2,
+      "smooth_alpha": 0.2
     },
     {
       "name": "right",
@@ -109,9 +109,9 @@ Returns:
 | `gripper` | string | | Name of the gripper component. Trigger controls proportional grip. |
 | `scale` | float | `1.0` | Position multiplier. `2.0` = arm moves 2x your hand movement. |
 | `rotation_enabled` | bool | `true` | Enable orientation tracking. |
-| `pos_deadzone_mm` | float | `0.5` | Position dead-zone in mm. Suppresses jitter. |
-| `rot_deadzone_deg` | float | `1.0` | Rotation dead-zone in degrees. |
-| `smooth_alpha` | float | `0.5` | EMA smoothing alpha (0-1). Lower = smoother, higher = more responsive. |
+| `pos_deadzone_mm` | float | `2.0` | Position dead-zone in mm. Suppresses jitter. |
+| `rot_deadzone_deg` | float | `2.0` | Rotation dead-zone in degrees. |
+| `smooth_alpha` | float | `0.2` | EMA smoothing alpha (0-1). Lower = smoother, higher = more responsive. |
 
 ### VR Controls
 

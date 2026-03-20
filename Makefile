@@ -19,9 +19,9 @@ endif
 export
 
 HZ ?= 90
-POS_DEADZONE ?= 0.5
-ROT_DEADZONE ?= 1.0
-SMOOTH_ALPHA ?= 0.5
+POS_DEADZONE ?= 2
+ROT_DEADZONE ?= 2
+SMOOTH_ALPHA ?= 0.2
 
 # Build libsurvive from source (first time only)
 $(LIBSURVIVE_LIB):
