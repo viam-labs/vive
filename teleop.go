@@ -508,6 +508,9 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 		// Reset discovery and frame-check state so poll loop re-discovers controllers and re-checks frame.
 		svc.controllersAssigned = false
 		svc.frameChecked.Store(false)
+		// Reset LighthouseTransform to its original value so the Z-flip correction
+		// isn't applied twice.
+		LighthouseTransform = mgl64.HomogRotate3DZ(math.Pi / 2)
 
 		svc.logger.Info("Recalibration complete — base stations will re-solve. Use 'calibrate' or trackpad-up to set forward direction.")
 		return map[string]interface{}{"recalibrated": true}, nil
