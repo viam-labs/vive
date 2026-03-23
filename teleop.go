@@ -1,6 +1,7 @@
 package vive
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -147,7 +148,18 @@ type teleopHand struct {
 	poseStack     []Pose
 
 	// session logging
-	logFile *os.File
+	logFile   *os.File
+	logWriter *bufio.Writer
+	logMu     sync.Mutex
+
+	// profiling (all atomic — read from profiling_stats DoCommand on arbitrary goroutines)
+	frameSeq         atomic.Uint64
+	dropCount        atomic.Uint64
+	consecutiveDrops atomic.Uint64
+	dropsSinceSend   atomic.Uint64
+	lastGrpcNanos    atomic.Int64
+	ewmaDropRate     atomic.Uint64 // float64 via Float64bits/Float64frombits
+	ewmaDzRate       atomic.Uint64 // float64 via Float64bits/Float64frombits
 
 	// dead-zone filtering
 	posDeadzone      float64
@@ -577,6 +589,21 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 		return nil, fmt.Errorf("no capture control sensor configured")
 	}
 
+	if _, ok := cmd["profiling_stats"]; ok {
+		result := map[string]interface{}{}
+		for _, h := range svc.hands {
+			result[h.name] = map[string]interface{}{
+				"frame_seq":                  h.frameSeq.Load(),
+				"drop_count_total":           h.dropCount.Load(),
+				"drop_rate_ewma_pct":         atomicLoadFloat64(&h.ewmaDropRate) * 100,
+				"deadzone_filtered_ewma_pct": atomicLoadFloat64(&h.ewmaDzRate) * 100,
+				"last_grpc_ms":               float64(h.lastGrpcNanos.Load()) / 1e6,
+				"consecutive_drops":          h.consecutiveDrops.Load(),
+			}
+		}
+		return result, nil
+	}
+
 	return nil, fmt.Errorf("unknown command: %v", cmd)
 }
 
@@ -847,6 +874,10 @@ func (svc *teleopService) pollLoop(ctx context.Context, hz int) {
 			}
 			svc.discoverAndAssignControllers()
 			lastScan = time.Now()
+			// Periodic flush of session log buffers.
+			for _, h := range svc.hands {
+				h.flushLog()
+			}
 		}
 
 		survive.PollEvents()
@@ -926,6 +957,19 @@ func (h *teleopHand) teleopStatusLoop(ctx context.Context) {
 						h.sendHaptic(0.8, 200)
 					}
 				}
+				// Log RDK-side timing into session JSONL.
+				h.writeLog(fmt.Sprintf(
+					`{"t":%d,"event":"rdk_status","inputs_ms":%.3f,"plan_ms":%.3f,"exec_ms":%.3f,"exec_wait_ms":%.3f,"plan_count":%v,"exec_count":%v,"queued_poses":%v,"queued_plans":%v}`+"\n",
+					time.Now().UnixMilli(),
+					toFloat64(statusMap["last_inputs_ms"]),
+					toFloat64(statusMap["last_plan_ms"]),
+					toFloat64(statusMap["last_exec_ms"]),
+					toFloat64(statusMap["last_exec_wait_ms"]),
+					statusMap["plan_count"],
+					statusMap["exec_count"],
+					statusMap["queued_poses"],
+					statusMap["queued_plans"],
+				))
 			}
 		}
 	}
@@ -1096,6 +1140,7 @@ func (h *teleopHand) startControl(ctx context.Context, cs ControllerState) {
 				h.svc.logger.Warnf("[%s] failed to create log file %s: %v", h.name, logName, err)
 			} else {
 				h.logFile = f
+				h.logWriter = bufio.NewWriter(f)
 			}
 		}
 
@@ -1117,6 +1162,7 @@ func (h *teleopHand) startControl(ctx context.Context, cs ControllerState) {
 }
 
 func (h *teleopHand) controlFrame(ctx context.Context, cs ControllerState) {
+	h.frameSeq.Add(1)
 	now := time.Now()
 	if now.Sub(h.lastCmdTime) < cmdInterval {
 		return
@@ -1161,8 +1207,13 @@ func (h *teleopHand) controlFrame(ctx context.Context, cs ControllerState) {
 
 	if !ExceedsDeadzone(h.lastSentPose, candidate, h.posDeadzone, h.rotDeadzone) {
 		h.deadzoneFiltered++
+		// Update EWMA for deadzone rate (alpha=0.05 ~ last ~20 samples weighted)
+		atomicStoreFloat64(&h.ewmaDzRate, 0.05*1.0+0.95*atomicLoadFloat64(&h.ewmaDzRate))
 		return
 	}
+	// Deadzone passed — update EWMA with 0
+	atomicStoreFloat64(&h.ewmaDzRate, 0.95*atomicLoadFloat64(&h.ewmaDzRate))
+	dzSince := h.deadzoneFiltered
 	if h.deadzoneFiltered > 0 {
 		h.svc.logger.Debugf("[%s] deadzone: suppressed %d frames", h.name, h.deadzoneFiltered)
 		h.deadzoneFiltered = 0
@@ -1175,21 +1226,57 @@ func (h *teleopHand) controlFrame(ctx context.Context, cs ControllerState) {
 			`{"reference_frame":"world","pose":{"x":%f,"y":%f,"z":%f,"o_x":%f,"o_y":%f,"o_z":%f,"theta":%f}}`,
 			candidate.X, candidate.Y, candidate.Z, candidate.OX, candidate.OY, candidate.OZ, candidate.ThetaDeg,
 		)
-		if h.logFile != nil {
-			logEntry := fmt.Sprintf(`{"t":%d,"x":%f,"y":%f,"z":%f,"o_x":%f,"o_y":%f,"o_z":%f,"theta":%f}`+"\n",
-				now.UnixMilli(), candidate.X, candidate.Y, candidate.Z, candidate.OX, candidate.OY, candidate.OZ, candidate.ThetaDeg)
-			h.logFile.WriteString(logEntry)
+
+		// Compute jump distance from last sent pose.
+		var jumpMM float64
+		if h.lastSentPose != nil {
+			dx := candidate.X - h.lastSentPose.X
+			dy := candidate.Y - h.lastSentPose.Y
+			dz := candidate.Z - h.lastSentPose.Z
+			jumpMM = math.Sqrt(dx*dx + dy*dy + dz*dz)
 		}
+
 		if !h.movePending.CompareAndSwap(false, true) {
+			h.dropCount.Add(1)
+			h.consecutiveDrops.Add(1)
+			h.dropsSinceSend.Add(1)
+			// Update EWMA for drop rate
+			atomicStoreFloat64(&h.ewmaDropRate, 0.05*1.0+0.95*atomicLoadFloat64(&h.ewmaDropRate))
 			return
 		}
+		// Update EWMA with 0 (no drop)
+		atomicStoreFloat64(&h.ewmaDropRate, 0.95*atomicLoadFloat64(&h.ewmaDropRate))
+
+		// Capture and reset drop counter for this send.
+		dropsSince := h.dropsSinceSend.Swap(0)
+		h.consecutiveDrops.Store(0)
+		seq := h.frameSeq.Load()
+
+		// Write JSONL send entry (mutex-protected for concurrent ack writes).
+		h.writeLog(fmt.Sprintf(
+			`{"t":%d,"seq":%d,"x":%f,"y":%f,"z":%f,"o_x":%f,"o_y":%f,"o_z":%f,"theta":%f,"drops":%d,"jump_mm":%.2f,"dz_filtered":%d}`+"\n",
+			now.UnixMilli(), seq, candidate.X, candidate.Y, candidate.Z,
+			candidate.OX, candidate.OY, candidate.OZ, candidate.ThetaDeg,
+			dropsSince, jumpMM, dzSince,
+		))
+
 		h.lastSentPose = &candidate
 		go func() {
 			defer h.movePending.Store(false)
-			if _, err := h.motionSvc.DoCommand(ctx, map[string]interface{}{
+			grpcCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+			defer cancel()
+			sendStart := time.Now()
+			if _, err := h.motionSvc.DoCommand(grpcCtx, map[string]interface{}{
 				"teleop_move": moveReq,
+				"seq":         seq,
 			}); err != nil {
-				h.svc.logger.Warnf("[%s] teleop_move err: %v", h.name, err)
+				grpcDur := time.Since(sendStart)
+				h.lastGrpcNanos.Store(grpcDur.Nanoseconds())
+				if grpcCtx.Err() == context.DeadlineExceeded {
+					h.svc.logger.Warnf("[%s] teleop_move timed out after %s (seq=%d)", h.name, grpcDur, seq)
+				} else {
+					h.svc.logger.Warnf("[%s] teleop_move err: %v", h.name, err)
+				}
 				h.errorTimeout = time.Now().Add(errorCooldown)
 				h.sendHaptic(0.8, 200)
 				if strings.Contains(err.Error(), "not running") {
@@ -1197,9 +1284,60 @@ func (h *teleopHand) controlFrame(ctx context.Context, cs ControllerState) {
 					h.isControlling = false
 					h.svc.logger.Warnf("[%s] teleop session lost, releasing control", h.name)
 				}
+			} else {
+				grpcDur := time.Since(sendStart)
+				h.lastGrpcNanos.Store(grpcDur.Nanoseconds())
+				h.writeLog(fmt.Sprintf(
+					`{"t":%d,"seq":%d,"event":"ack","grpc_ms":%.3f}`+"\n",
+					time.Now().UnixMilli(), seq, float64(grpcDur.Nanoseconds())/1e6,
+				))
 			}
 		}()
 	}
+}
+
+// atomicLoadFloat64 loads a float64 stored in an atomic.Uint64 via Float64bits encoding.
+func atomicLoadFloat64(a *atomic.Uint64) float64 {
+	return math.Float64frombits(a.Load())
+}
+
+// atomicStoreFloat64 stores a float64 into an atomic.Uint64 via Float64bits encoding.
+func atomicStoreFloat64(a *atomic.Uint64, v float64) {
+	a.Store(math.Float64bits(v))
+}
+
+// toFloat64 extracts a float64 from an interface{} value (gRPC responses return numbers as float64).
+func toFloat64(v interface{}) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case float32:
+		return float64(n)
+	case int64:
+		return float64(n)
+	case int:
+		return float64(n)
+	default:
+		return 0
+	}
+}
+
+// writeLog writes a line to the session log file, guarded by logMu.
+func (h *teleopHand) writeLog(line string) {
+	h.logMu.Lock()
+	if h.logWriter != nil {
+		h.logWriter.WriteString(line)
+	}
+	h.logMu.Unlock()
+}
+
+// flushLog flushes the buffered log writer.
+func (h *teleopHand) flushLog() {
+	h.logMu.Lock()
+	if h.logWriter != nil {
+		h.logWriter.Flush()
+	}
+	h.logMu.Unlock()
 }
 
 func (h *teleopHand) stopTeleop(ctx context.Context) {
@@ -1221,9 +1359,15 @@ func (h *teleopHand) stopTeleop(ctx context.Context) {
 		h.teleopActive = false
 	}
 	if h.logFile != nil {
+		h.logMu.Lock()
+		if h.logWriter != nil {
+			h.logWriter.Flush()
+		}
+		h.logWriter = nil
+		h.logMu.Unlock()
 		h.logFile.Close()
-		h.svc.logger.Infof("[%s] session log closed", h.name)
 		h.logFile = nil
+		h.svc.logger.Infof("[%s] session log closed", h.name)
 	}
 }
 
