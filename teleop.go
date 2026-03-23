@@ -18,6 +18,7 @@ import (
 	"go.viam.com/rdk/components/arm"
 	"go.viam.com/rdk/components/gripper"
 	input "go.viam.com/rdk/components/input"
+	"go.viam.com/rdk/components/sensor"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/referenceframe"
 	"go.viam.com/rdk/resource"
@@ -49,9 +50,10 @@ type HandConfig struct {
 }
 
 type TeleopConfig struct {
-	Hz             int          `json:"hz,omitempty"`
-	Hands          []HandConfig `json:"hands"`
-	CalibrationDir string       `json:"calibration_dir,omitempty"`
+	Hz                   int          `json:"hz,omitempty"`
+	Hands                []HandConfig `json:"hands"`
+	CalibrationDir       string       `json:"calibration_dir,omitempty"`
+	CaptureControlSensor string       `json:"capture_control_sensor,omitempty"`
 }
 
 func (cfg *TeleopConfig) Validate(path string) ([]string, []string, error) {
@@ -73,6 +75,9 @@ func (cfg *TeleopConfig) Validate(path string) ([]string, []string, error) {
 	}
 	// Motion service dependency.
 	deps = append(deps, "rdk:service:motion/builtin")
+	if cfg.CaptureControlSensor != "" {
+		deps = append(deps, cfg.CaptureControlSensor)
+	}
 	return deps, nil, nil
 }
 
@@ -105,6 +110,9 @@ type teleopService struct {
 	// surviveMu guards libsurvive access during recalibration/pairing to prevent
 	// the poll loop from calling into a destroyed context.
 	surviveMu sync.Mutex
+
+	// capture control sensor for data collection during teleop
+	captureSensor sensor.Sensor
 }
 
 type teleopHand struct {
@@ -205,6 +213,16 @@ func NewTeleopService(ctx context.Context, deps resource.Dependencies, name reso
 
 	// Load calibration.
 	svc.loadCalib()
+
+	// Resolve capture control sensor if configured.
+	if conf.CaptureControlSensor != "" {
+		capSensor, err := sensor.FromDependencies(deps, conf.CaptureControlSensor)
+		if err != nil {
+			logger.Warnf("capture control sensor %q not available: %v", conf.CaptureControlSensor, err)
+		} else {
+			svc.captureSensor = capSensor
+		}
+	}
 
 	// Resolve dependencies and create hands.
 	motionSvc, err := motion.FromDependencies(deps, "builtin")
@@ -483,15 +501,7 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 			}
 		}
 
-		// Lock out the poll loop while we tear down and reinit libsurvive.
-		svc.surviveMu.Lock()
-
-		// Release libsurvive (same pattern as pair_mode).
-		for range svc.hands {
-			survive.Release()
-		}
-
-		// Delete libsurvive cached base station config.
+		// Delete libsurvive cached base station config before restart.
 		homeDir, _ := os.UserHomeDir()
 		lsConfig := filepath.Join(homeDir, ".config", "libsurvive", "config.json")
 		if err := os.Remove(lsConfig); err != nil && !os.IsNotExist(err) {
@@ -506,14 +516,17 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 		calibPath := filepath.Join(svc.calibDir, "calibration.json")
 		os.Remove(calibPath)
 
-		// Re-acquire libsurvive (re-solves base station geometry).
+		// Lock out the poll loop and force-restart libsurvive.
+		svc.surviveMu.Lock()
+
 		exePath, _ := os.Executable()
 		pluginLib := filepath.Join(filepath.Dir(exePath), "libsurvive", "lib", "libsurvive.so")
 		if _, statErr := os.Stat(pluginLib); statErr != nil {
 			pluginLib = filepath.Join(filepath.Dir(exePath), "libsurvive", "lib", "libsurvive.dylib")
 		}
-		for range svc.hands {
-			_ = survive.Acquire(pluginLib)
+		if err := survive.ForceRestart(pluginLib); err != nil {
+			svc.surviveMu.Unlock()
+			return nil, fmt.Errorf("recalibrate: %w", err)
 		}
 
 		// Reset LighthouseTransform to its original value so the Z-flip correction
@@ -555,6 +568,13 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 
 		svc.logger.Info("Recalibration complete — base stations solved. Use 'calibrate' or trackpad-up to set forward direction.")
 		return map[string]interface{}{"recalibrated": true, "base_stations_solved": true}, nil
+	}
+
+	if taskCmd, ok := cmd["set_task"]; ok {
+		if svc.captureSensor != nil {
+			return svc.captureSensor.DoCommand(ctx, map[string]interface{}{"set_task": taskCmd})
+		}
+		return nil, fmt.Errorf("no capture control sensor configured")
 	}
 
 	return nil, fmt.Errorf("unknown command: %v", cmd)
@@ -1079,6 +1099,14 @@ func (h *teleopHand) startControl(ctx context.Context, cs ControllerState) {
 			}
 		}
 
+		if h.svc.captureSensor != nil {
+			if _, err := h.svc.captureSensor.DoCommand(ctx, map[string]interface{}{
+				"start-capture": true,
+			}); err != nil {
+				h.svc.logger.Warnf("[%s] capture start failed: %v", h.name, err)
+			}
+		}
+
 		h.errorTimeout = time.Time{}
 		h.lastSentPose = nil
 		h.smoothedPose = nil
@@ -1175,6 +1203,13 @@ func (h *teleopHand) controlFrame(ctx context.Context, cs ControllerState) {
 }
 
 func (h *teleopHand) stopTeleop(ctx context.Context) {
+	if h.svc.captureSensor != nil {
+		if _, err := h.svc.captureSensor.DoCommand(ctx, map[string]interface{}{
+			"stop-capture": true,
+		}); err != nil {
+			h.svc.logger.Warnf("[%s] capture stop failed: %v", h.name, err)
+		}
+	}
 	if h.motionSvc != nil && h.teleopActive {
 		if _, err := h.motionSvc.DoCommand(ctx, map[string]interface{}{
 			"teleop_stop": true,

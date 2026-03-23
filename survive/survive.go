@@ -226,6 +226,22 @@ func Release() {
 	}
 }
 
+// ForceRestart shuts down and re-initializes libsurvive regardless of refcount.
+// The reference count is preserved so existing holders remain valid.
+func ForceRestart(pluginPath string) error {
+	mu.Lock()
+	defer mu.Unlock()
+	if refCount > 0 {
+		C.vr_shutdown()
+	}
+	cPath := C.CString(pluginPath)
+	defer C.free(unsafe.Pointer(cPath))
+	if C.vr_init(cPath) != 0 {
+		return fmt.Errorf("libsurvive re-initialization failed")
+	}
+	return nil
+}
+
 // IsRunning returns true if the libsurvive context is active.
 func IsRunning() bool {
 	return C.vr_is_running() != 0

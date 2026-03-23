@@ -178,6 +178,14 @@ Returns all libsurvive tracked objects with serial numbers and assignment status
 
 Manually assigns a controller by serial number. Persists to `controller_map.json`.
 
+**Set task description (for VLA training data):**
+
+```json
+{"set_task": "pick up the red block"}
+```
+
+Sets the task string used to tag captured data. Requires `capture_control_sensor` to be configured. The task persists until changed — call this from the Viam app control tab before each demonstration.
+
 **Start dongle pairing:**
 
 ```json
@@ -190,6 +198,112 @@ Starts the Watchman dongle pairing flow. Power on each controller one at a time 
 
 **Base station bumped / tracking is wrong:**
 Run the `recalibrate` DoCommand to clear cached base station geometry and restart tracking. The command blocks until base stations are re-solved. Then recalibrate the forward direction with trackpad-up or `{"calibrate": true}`.
+
+## Configure capture-control
+
+The capture-control sensor enables automatic data capture during teleop sessions. When the grip is pressed (teleop starts), the sensor instructs the data manager to begin capturing arm pose and camera data. When the grip is released, capture stops. All captured data is tagged with a session timestamp and an optional task description for VLA training.
+
+```jsonc
+{
+  // required — arm component to capture EndPosition from
+  "arm_name": "right-arm",
+  // optional — cameras to capture GetImages from
+  "camera_names": ["wrist-cam", "overhead-cam"],
+  // default: 10.0 — capture rate in Hz
+  "capture_frequency_hz": 10.0
+}
+```
+
+Wire it into the teleop service by adding `capture_control_sensor` to the teleop config:
+
+```jsonc
+{
+  "hands": [...],
+  "capture_control_sensor": "capture-ctrl"
+}
+```
+
+### Data Manager Setup
+
+The target resources (arm, cameras) must have data capture configured — even if initially disabled with `capture_frequency_hz: 0`. The capture-control sensor overrides the frequency at runtime.
+
+**Arm:**
+```json
+{
+  "name": "right-arm",
+  "service_configs": [
+    {
+      "type": "data_manager",
+      "attributes": {
+        "capture_methods": [
+          {"method": "EndPosition", "capture_frequency_hz": 0}
+        ]
+      }
+    }
+  ]
+}
+```
+
+**Camera (repeat for each):**
+```json
+{
+  "name": "wrist-cam",
+  "service_configs": [
+    {
+      "type": "data_manager",
+      "attributes": {
+        "capture_methods": [
+          {"method": "GetImages", "capture_frequency_hz": 0}
+        ]
+      }
+    }
+  ]
+}
+```
+
+**Data manager service:**
+```json
+{
+  "name": "data_manager-1",
+  "api": "rdk:service:data_manager",
+  "model": "rdk:builtin:builtin",
+  "attributes": {
+    "capture_control_sensor": {
+      "name": "capture-ctrl",
+      "key": "overrides"
+    },
+    "sync_interval_mins": 0.1,
+    "sync_disabled": false
+  }
+}
+```
+
+### Workflow
+
+1. Set the task description via DoCommand on the teleop service: `{"set_task": "pick up the red block"}`
+2. Press grip — teleop starts and data capture begins automatically. All data is tagged with `session:<timestamp>` and `cmd:<task>`.
+3. Release grip — teleop stops and data capture stops.
+4. Change the task string with another `set_task` call before the next demonstration.
+
+### DoCommand
+
+**Set task (via sensor directly):**
+
+```json
+{"set_task": "pick up the red block"}
+```
+
+**Get status:**
+
+```json
+{"status": true}
+```
+
+Returns:
+
+```json
+{"capturing": false, "capture_frequency_hz": 10, "tags": null, "task": "pick up the red block"}
+```
 
 ## Getting Started
 
