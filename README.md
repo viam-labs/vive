@@ -126,6 +126,18 @@ Returns:
 
 Clears cached base station positions and restarts tracking. Use this after a base station is bumped or moved — tracking will be incorrect until recalibrated. After base stations re-solve (~5s), use `calibrate` or trackpad-up to set the forward direction.
 
+**Get current calibration:**
+
+```json
+{"get_calibration": true}
+```
+
+Returns:
+
+```json
+{"calibrated": true, "yaw_deg": 175.9}
+```
+
 **Get teleop status:**
 
 ```json

@@ -305,11 +305,24 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 			if cs != nil && cs.Connected {
 				if yaw, ok := ComputeCalibYaw(cs.Mat); ok {
 					svc.saveCalib(yaw)
-					return map[string]interface{}{"calibrated": true, "yaw_deg": yaw * 180 / math.Pi}, nil
+					yawDeg := yaw * 180 / math.Pi
+					svc.logger.Infof("Forward direction calibrated: %.1f°", yawDeg)
+					return map[string]interface{}{"calibrated": true, "yaw_deg": yawDeg}, nil
 				}
 			}
 		}
 		return nil, fmt.Errorf("no connected controller available for calibration")
+	}
+
+	if _, ok := cmd["get_calibration"]; ok {
+		svc.calibMu.RLock()
+		calibrated := svc.calibSet
+		yaw := svc.calibYaw
+		svc.calibMu.RUnlock()
+		return map[string]interface{}{
+			"calibrated": calibrated,
+			"yaw_deg":    yaw * 180 / math.Pi,
+		}, nil
 	}
 
 	if _, ok := cmd["status"]; ok {
