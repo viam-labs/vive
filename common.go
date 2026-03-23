@@ -11,6 +11,7 @@ var (
 	family         = resource.ModelNamespace("viam").WithFamily("vive")
 	ViveController = family.WithModel("vive-controller")
 	ViveTeleop     = family.WithModel("teleop")
+	CaptureControl = family.WithModel("capture-control")
 )
 
 // ControllerState is the processed state of a single VR controller,

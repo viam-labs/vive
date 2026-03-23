@@ -16,6 +16,12 @@
       "model": "viam:vive:teleop",
       "markdown_link": "README.md#configure-teleop-service",
       "short_description": "VR arm teleop service with dual-hand support"
+    },
+    {
+      "api": "rdk:component:sensor",
+      "model": "viam:vive:capture-control",
+      "markdown_link": "README.md#configure-capture-control",
+      "short_description": "Data capture control sensor for teleop training data collection"
     }
   ],
   "markdown_link": "README.md",
