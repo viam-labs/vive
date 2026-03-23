@@ -516,17 +516,45 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 			_ = survive.Acquire(pluginLib)
 		}
 
-		svc.surviveMu.Unlock()
-
-		// Reset discovery and frame-check state so poll loop re-discovers controllers and re-checks frame.
-		svc.controllersAssigned = false
-		svc.frameChecked.Store(false)
 		// Reset LighthouseTransform to its original value so the Z-flip correction
 		// isn't applied twice.
 		LighthouseTransform = mgl64.HomogRotate3DZ(math.Pi / 2)
 
-		svc.logger.Info("Recalibration complete — base stations will re-solve. Use 'calibrate' or trackpad-up to set forward direction.")
-		return map[string]interface{}{"recalibrated": true}, nil
+		// Wait for libsurvive to re-solve base station positions before returning.
+		// We keep surviveMu locked so the poll loop doesn't race us.
+		solveDeadline := time.Now().Add(30 * time.Second)
+		solved := false
+		for time.Now().Before(solveDeadline) {
+			if ctx.Err() != nil {
+				svc.surviveMu.Unlock()
+				return nil, fmt.Errorf("recalibrate: context cancelled while waiting for base station solve")
+			}
+			survive.PollEvents()
+			if upZ := survive.FrameUpZ(); upZ != 0 {
+				if upZ < 0 {
+					svc.logger.Warnf("Frame Z-flip detected (upZ=%.2f), applying 180° X correction", upZ)
+					LighthouseTransform = mgl64.HomogRotate3DX(math.Pi).Mul4(LighthouseTransform)
+				} else {
+					svc.logger.Infof("Frame orientation OK (upZ=%.2f)", upZ)
+				}
+				svc.frameChecked.Store(true)
+				solved = true
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+
+		svc.surviveMu.Unlock()
+
+		svc.controllersAssigned = false
+		if !solved {
+			svc.frameChecked.Store(false)
+			svc.logger.Warn("Base stations did not solve within 30s — tracking may be unavailable")
+			return map[string]interface{}{"recalibrated": true, "base_stations_solved": false}, nil
+		}
+
+		svc.logger.Info("Recalibration complete — base stations solved. Use 'calibrate' or trackpad-up to set forward direction.")
+		return map[string]interface{}{"recalibrated": true, "base_stations_solved": true}, nil
 	}
 
 	return nil, fmt.Errorf("unknown command: %v", cmd)

@@ -124,7 +124,7 @@ Returns:
 {"recalibrate": true}
 ```
 
-Clears cached base station positions and restarts tracking. Use this after a base station is bumped or moved — tracking will be incorrect until recalibrated. After base stations re-solve (~5s), use `calibrate` or trackpad-up to set the forward direction.
+Clears cached base station positions and restarts tracking. Use this after a base station is bumped or moved. Blocks until base stations are re-solved (up to 30s). After it returns, use `calibrate` or trackpad-up to set the forward direction.
 
 **Get current calibration:**
 
@@ -189,7 +189,7 @@ Starts the Watchman dongle pairing flow. Power on each controller one at a time 
 ### Troubleshooting
 
 **Base station bumped / tracking is wrong:**
-Run the `recalibrate` DoCommand to clear cached base station geometry and restart tracking. After ~5 seconds, recalibrate the forward direction with trackpad-up or `{"calibrate": true}`.
+Run the `recalibrate` DoCommand to clear cached base station geometry and restart tracking. The command blocks until base stations are re-solved. Then recalibrate the forward direction with trackpad-up or `{"calibrate": true}`.
 
 ## Getting Started
 
