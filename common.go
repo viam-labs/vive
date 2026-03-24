@@ -30,10 +30,12 @@ type ControllerState struct {
 
 var NullController = ControllerState{Mat: mgl64.Ident4()}
 
-// LighthouseTransform maps libsurvive tracking frame → Viam robot frame.
+// BaseLighthouseTransform maps libsurvive tracking frame → Viam robot frame.
 // libsurvive uses Z-up, -Y-forward, X-left. Viam uses Z-up, X-forward, Y-left.
 // A +90° rotation around Z gives: -Y→+X (forward), +X→+Y (left), +Z→+Z (up).
-var LighthouseTransform = mgl64.HomogRotate3DZ(math.Pi / 2)
+// This is the base transform without Z-flip correction; per-service lhTransform
+// includes the Z-flip and is the value used at runtime.
+var BaseLighthouseTransform = mgl64.HomogRotate3DZ(math.Pi / 2)
 
 // Mat34ToMat4 converts a row-major 3×4 float32 matrix to an mgl64.Mat4.
 // Input layout: m[row*4+col], mgl64 layout: column-major [col*4+row].
@@ -133,9 +135,9 @@ func EmaSmooth(prev *Pose, raw Pose, alpha float64) Pose {
 }
 
 // ValidateFrameUp checks whether the controller's "up" direction (body Y-axis,
-// through the tracking ring) maps to +Z in robot frame after LighthouseTransform.
+// through the tracking ring) maps to +Z in robot frame after the lighthouse transform.
 // Returns true if the frame orientation is correct, false if inverted.
-func ValidateFrameUp(controllerMat mgl64.Mat4) bool {
+func ValidateFrameUp(controllerMat, lhTransform mgl64.Mat4) bool {
 	// Column 1 of the controller's pose matrix is its body Y-axis in the LS world frame.
 	upInLS := mgl64.Vec4{
 		controllerMat.At(0, 1),
@@ -143,7 +145,7 @@ func ValidateFrameUp(controllerMat mgl64.Mat4) bool {
 		controllerMat.At(2, 1),
 		0,
 	}
-	robotUp := LighthouseTransform.Mul4x1(upInLS)
+	robotUp := lhTransform.Mul4x1(upInLS)
 	return robotUp[2] > 0
 }
 

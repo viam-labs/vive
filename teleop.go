@@ -99,11 +99,12 @@ type teleopService struct {
 	firstControllerSeen time.Time
 	serialWaitLogged    bool
 
-	// calibration state (shared across all hands)
-	calibMu  sync.RWMutex
-	calibYaw float64
-	calibSet bool
-	calibDir string
+	// calibration state (shared across all hands, protected by calibMu)
+	calibMu     sync.RWMutex
+	calibYaw    float64
+	calibSet    bool
+	calibDir    string
+	lhTransform mgl64.Mat4 // current lighthouse transform (base + optional Z-flip)
 
 	// frameChecked tracks whether pollLoop has verified base station frame orientation.
 	frameChecked atomic.Bool
@@ -113,7 +114,7 @@ type teleopService struct {
 	surviveMu sync.Mutex
 
 	// zFlipApplied tracks whether the Rx(180°) Z-flip correction is currently
-	// applied to LighthouseTransform. Used to prevent double-application.
+	// applied to lhTransform. Used to prevent double-application.
 	zFlipApplied bool
 
 	// capture control sensor for data collection during teleop
@@ -219,12 +220,13 @@ func NewTeleopService(ctx context.Context, deps resource.Dependencies, name reso
 	cancelCtx, cancelFunc := context.WithCancel(context.Background())
 
 	svc := &teleopService{
-		name:       name,
-		logger:     logger,
-		cfg:        conf,
-		cancelCtx:  cancelCtx,
-		cancelFunc: cancelFunc,
-		calibDir:   calibDir,
+		name:        name,
+		logger:      logger,
+		cfg:         conf,
+		cancelCtx:   cancelCtx,
+		cancelFunc:  cancelFunc,
+		calibDir:    calibDir,
+		lhTransform: BaseLighthouseTransform,
 	}
 
 	// Load calibration.
@@ -339,7 +341,10 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 			if cs != nil && cs.Connected {
 				// Validate that the controller's "up" maps to +Z in robot frame.
 				// If not, the Z-flip correction is wrong — toggle it.
-				if !ValidateFrameUp(cs.Mat) {
+				svc.calibMu.RLock()
+				lht := svc.lhTransform
+				svc.calibMu.RUnlock()
+				if !ValidateFrameUp(cs.Mat, lht) {
 					svc.logger.Warnf("Controller up-axis inverted in robot frame, toggling Z-flip (was %v)", svc.zFlipApplied)
 					svc.setZFlip(!svc.zFlipApplied)
 				}
@@ -595,12 +600,53 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 			time.Sleep(50 * time.Millisecond)
 		}
 
+		// Fallback: if OOTX accel data never arrived, try controller-based z-flip detection.
+		if !solved {
+			svc.logger.Info("OOTX accel unavailable, waiting for controller tracking to detect z-flip...")
+			ctrlDeadline := time.Now().Add(30 * time.Second)
+			for time.Now().Before(ctrlDeadline) {
+				if ctx.Err() != nil {
+					svc.surviveMu.Unlock()
+					return nil, fmt.Errorf("recalibrate: context cancelled while waiting for controller tracking")
+				}
+				survive.PollEvents()
+				// Check all known objects for a controller with valid pose.
+				nObj := survive.ObjectCount()
+				for i := 0; i < nObj; i++ {
+					info := survive.GetObjectInfo(i)
+					if !info.IsController {
+						continue
+					}
+					data := survive.GetController(info.Name)
+					if data.PoseValid {
+						mat := Mat34ToMat4(data.Mat)
+						svc.calibMu.RLock()
+						lht := svc.lhTransform
+						svc.calibMu.RUnlock()
+						if !ValidateFrameUp(mat, lht) {
+							svc.logger.Warn("Controller frame check: Z inverted after recalibrate, applying flip")
+							svc.setZFlip(true)
+						} else {
+							svc.logger.Info("Controller frame check: orientation OK after recalibrate")
+						}
+						svc.frameChecked.Store(true)
+						solved = true
+						break
+					}
+				}
+				if solved {
+					break
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
+
 		svc.surviveMu.Unlock()
 
 		svc.controllersAssigned = false
 		if !solved {
 			svc.frameChecked.Store(false)
-			svc.logger.Warn("Base stations did not solve within 30s — tracking may be unavailable")
+			svc.logger.Warn("Base stations did not solve within 60s — tracking may be unavailable")
 			return map[string]interface{}{"recalibrated": true, "base_stations_solved": false}, nil
 		}
 
@@ -648,15 +694,17 @@ func (svc *teleopService) Close(ctx context.Context) error {
 // ---------------------------------------------------------------------------
 
 // setZFlip idempotently sets or clears the Rx(180°) Z-flip correction on
-// LighthouseTransform. Tracking the state explicitly prevents double-application.
+// svc.lhTransform. Tracking the state explicitly prevents double-application.
 func (svc *teleopService) setZFlip(apply bool) {
 	if apply == svc.zFlipApplied {
 		return
 	}
-	LighthouseTransform = mgl64.HomogRotate3DZ(math.Pi / 2)
+	svc.calibMu.Lock()
+	svc.lhTransform = BaseLighthouseTransform
 	if apply {
-		LighthouseTransform = mgl64.HomogRotate3DX(math.Pi).Mul4(LighthouseTransform)
+		svc.lhTransform = mgl64.HomogRotate3DX(math.Pi).Mul4(svc.lhTransform)
 	}
+	svc.calibMu.Unlock()
 	svc.zFlipApplied = apply
 	svc.logger.Infof("Z-flip correction set to %v", apply)
 }
@@ -909,9 +957,28 @@ func (svc *teleopService) pollLoop(ctx context.Context, hz int) {
 			if !svc.frameChecked.Load() {
 				upZ := survive.FrameUpZ()
 				if upZ != 0 {
-					svc.frameChecked.Store(true)
+					// OOTX accelerometer data available — use it.
 					svc.setZFlip(upZ < 0)
+					svc.frameChecked.Store(true)
 					svc.logger.Infof("Frame solve complete (upZ=%.2f, z_flip=%v)", upZ, svc.zFlipApplied)
+				} else if svc.controllersAssigned {
+					// Fallback: OOTX unavailable, use controller tracking matrix.
+					for _, h := range svc.hands {
+						cs := h.controller.UpdateState()
+						if cs != nil && cs.Connected {
+							svc.calibMu.RLock()
+							lht := svc.lhTransform
+							svc.calibMu.RUnlock()
+							if !ValidateFrameUp(cs.Mat, lht) {
+								svc.logger.Warnf("Controller frame check: Z inverted, toggling flip (was %v)", svc.zFlipApplied)
+								svc.setZFlip(!svc.zFlipApplied)
+							} else {
+								svc.logger.Infof("Controller frame check: orientation OK (z_flip=%v)", svc.zFlipApplied)
+							}
+							svc.frameChecked.Store(true)
+							break
+						}
+					}
 				}
 			}
 			svc.discoverAndAssignControllers()
@@ -1060,7 +1127,10 @@ func (h *teleopHand) tick(ctx context.Context, cs ControllerState) {
 		y := cs.Trackpad[1]
 		if y < -0.3 {
 			// Up: calibrate forward direction.
-			if !ValidateFrameUp(cs.Mat) {
+			h.svc.calibMu.RLock()
+			lht := h.svc.lhTransform
+			h.svc.calibMu.RUnlock()
+			if !ValidateFrameUp(cs.Mat, lht) {
 				h.svc.logger.Warnf("[%s] Controller up-axis inverted, toggling Z-flip (was %v)", h.name, h.svc.zFlipApplied)
 				h.svc.setZFlip(!h.svc.zFlipApplied)
 			}
@@ -1154,11 +1224,12 @@ func (h *teleopHand) startControl(ctx context.Context, cs ControllerState) {
 
 		h.svc.calibMu.RLock()
 		yaw := h.svc.calibYaw
+		lht := h.svc.lhTransform
 		h.svc.calibMu.RUnlock()
-		h.calibTransform = LighthouseTransform
+		h.calibTransform = lht
 		if yaw != 0 {
 			yawM := mgl64.HomogRotate3DZ(yaw)
-			h.calibTransform = LighthouseTransform.Mul4(yawM)
+			h.calibTransform = lht.Mul4(yawM)
 		}
 
 		calibInv := h.calibTransform.Inv()
