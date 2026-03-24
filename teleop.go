@@ -1291,10 +1291,6 @@ func (h *teleopHand) controlFrame(ctx context.Context, cs ControllerState) {
 	dx := cs.Pos[0] - h.ctrlRefPos[0]
 	dy := cs.Pos[1] - h.ctrlRefPos[1]
 	dz := cs.Pos[2] - h.ctrlRefPos[2]
-	if h.frameSeq.Load()%90 == 1 {
-		h.svc.logger.Infof("[%s] pos=(%.4f,%.4f,%.4f) ref=(%.4f,%.4f,%.4f) d=(%.4f,%.4f,%.4f)",
-			h.name, cs.Pos[0], cs.Pos[1], cs.Pos[2], h.ctrlRefPos[0], h.ctrlRefPos[1], h.ctrlRefPos[2], dx, dy, dz)
-	}
 	delta := h.calibTransform.Mul4x1(mgl64.Vec4{dx, dy, dz, 0})
 	scaleMM := h.scale * 1000
 	tx := h.robotRefPos[0] + delta[0]*scaleMM

@@ -51,6 +51,25 @@ static void quat_to_mat34(const SurvivePose *pose, float mat[12]) {
     mat[11] = (float)(pose->Pos[2]);
 }
 
+// fix_position_set works around a libsurvive bug where cached base station poses
+// are loaded from config.json but PositionSet is left at 0. Without this flag the
+// tracking thread ignores the cached poses and controller positions stay at zero.
+// Must be called BEFORE survive_simple_start_thread.
+static void fix_position_set(void) {
+    if (!gCtx) return;
+    SurviveContext *ctx = survive_simple_get_ctx(gCtx);
+    if (!ctx) return;
+    for (int i = 0; i < NUM_GEN2_LIGHTHOUSES; i++) {
+        if (!ctx->bsd[i].PositionSet) {
+            SurvivePose *p = &ctx->bsd[i].Pose;
+            if (p->Pos[0] != 0 || p->Pos[1] != 0 || p->Pos[2] != 0) {
+                ctx->bsd[i].PositionSet = 1;
+                printf("[vr] forced PositionSet=1 for lighthouse %d (had cached pose)\n", i);
+            }
+        }
+    }
+}
+
 static int vr_init(const char *pluginPath) {
     if (pluginPath && pluginPath[0]) {
         setenv("SURVIVE_PLUGINS", pluginPath, 1);
@@ -58,6 +77,7 @@ static int vr_init(const char *pluginPath) {
     char *args[] = {"vive"};
     gCtx = survive_simple_init_with_logger(1, args, vr_log_fn);
     if (!gCtx) return 1;
+    fix_position_set();
     survive_simple_start_thread(gCtx);
     printf("[vr] libsurvive initialized\n");
     return 0;
