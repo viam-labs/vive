@@ -132,6 +132,21 @@ func EmaSmooth(prev *Pose, raw Pose, alpha float64) Pose {
 	}
 }
 
+// ValidateFrameUp checks whether the controller's "up" direction (body Y-axis,
+// through the tracking ring) maps to +Z in robot frame after LighthouseTransform.
+// Returns true if the frame orientation is correct, false if inverted.
+func ValidateFrameUp(controllerMat mgl64.Mat4) bool {
+	// Column 1 of the controller's pose matrix is its body Y-axis in the LS world frame.
+	upInLS := mgl64.Vec4{
+		controllerMat.At(0, 1),
+		controllerMat.At(1, 1),
+		controllerMat.At(2, 1),
+		0,
+	}
+	robotUp := LighthouseTransform.Mul4x1(upInLS)
+	return robotUp[2] > 0
+}
+
 // ExceedsDeadzone returns true if the new pose differs from the last-sent pose
 // by more than the given position (mm) or rotation (degrees) thresholds.
 func ExceedsDeadzone(lastSent *Pose, newPose Pose, posMM, rotDeg float64) bool {

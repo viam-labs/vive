@@ -112,6 +112,10 @@ type teleopService struct {
 	// the poll loop from calling into a destroyed context.
 	surviveMu sync.Mutex
 
+	// zFlipApplied tracks whether the Rx(180°) Z-flip correction is currently
+	// applied to LighthouseTransform. Used to prevent double-application.
+	zFlipApplied bool
+
 	// capture control sensor for data collection during teleop
 	captureSensor sensor.Sensor
 }
@@ -333,11 +337,17 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 		for _, h := range svc.hands {
 			cs := h.controller.UpdateState()
 			if cs != nil && cs.Connected {
+				// Validate that the controller's "up" maps to +Z in robot frame.
+				// If not, the Z-flip correction is wrong — toggle it.
+				if !ValidateFrameUp(cs.Mat) {
+					svc.logger.Warnf("Controller up-axis inverted in robot frame, toggling Z-flip (was %v)", svc.zFlipApplied)
+					svc.setZFlip(!svc.zFlipApplied)
+				}
 				if yaw, ok := ComputeCalibYaw(cs.Mat); ok {
 					svc.saveCalib(yaw)
 					yawDeg := yaw * 180 / math.Pi
-					svc.logger.Infof("Forward direction calibrated: %.1f°", yawDeg)
-					return map[string]interface{}{"calibrated": true, "yaw_deg": yawDeg}, nil
+					svc.logger.Infof("Forward direction calibrated: %.1f° (z_flip=%v)", yawDeg, svc.zFlipApplied)
+					return map[string]interface{}{"calibrated": true, "yaw_deg": yawDeg, "z_flip": svc.zFlipApplied}, nil
 				}
 			}
 		}
@@ -352,6 +362,25 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 		return map[string]interface{}{
 			"calibrated": calibrated,
 			"yaw_deg":    yaw * 180 / math.Pi,
+			"z_flip":     svc.zFlipApplied,
+		}, nil
+	}
+
+	if flipCmd, ok := cmd["force_z_flip"]; ok {
+		apply, ok := flipCmd.(bool)
+		if !ok {
+			return nil, fmt.Errorf("force_z_flip: expected boolean value")
+		}
+		svc.setZFlip(apply)
+		return map[string]interface{}{"z_flip_applied": svc.zFlipApplied}, nil
+	}
+
+	if _, ok := cmd["get_frame_info"]; ok {
+		upZ := survive.FrameUpZ()
+		return map[string]interface{}{
+			"frame_up_z":     upZ,
+			"z_flip_applied": svc.zFlipApplied,
+			"frame_checked":  svc.frameChecked.Load(),
 		}, nil
 	}
 
@@ -541,9 +570,8 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 			return nil, fmt.Errorf("recalibrate: %w", err)
 		}
 
-		// Reset LighthouseTransform to its original value so the Z-flip correction
-		// isn't applied twice.
-		LighthouseTransform = mgl64.HomogRotate3DZ(math.Pi / 2)
+		// Reset Z-flip state to base transform.
+		svc.setZFlip(false)
 
 		// Wait for libsurvive to re-solve base station positions before returning.
 		// We keep surviveMu locked so the poll loop doesn't race us.
@@ -556,12 +584,10 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 			}
 			survive.PollEvents()
 			if upZ := survive.FrameUpZ(); upZ != 0 {
-				if upZ < 0 {
-					svc.logger.Warnf("Frame Z-flip detected (upZ=%.2f), applying 180° X correction", upZ)
-					LighthouseTransform = mgl64.HomogRotate3DX(math.Pi).Mul4(LighthouseTransform)
-				} else {
-					svc.logger.Infof("Frame orientation OK (upZ=%.2f)", upZ)
-				}
+				// Best-guess Z-flip from accelerometer. The forward calibration
+				// step will validate and correct this if needed.
+				svc.setZFlip(upZ < 0)
+				svc.logger.Infof("Frame solve complete (upZ=%.2f, z_flip=%v)", upZ, svc.zFlipApplied)
 				svc.frameChecked.Store(true)
 				solved = true
 				break
@@ -618,6 +644,24 @@ func (svc *teleopService) Close(ctx context.Context) error {
 }
 
 // ---------------------------------------------------------------------------
+// Frame orientation
+// ---------------------------------------------------------------------------
+
+// setZFlip idempotently sets or clears the Rx(180°) Z-flip correction on
+// LighthouseTransform. Tracking the state explicitly prevents double-application.
+func (svc *teleopService) setZFlip(apply bool) {
+	if apply == svc.zFlipApplied {
+		return
+	}
+	LighthouseTransform = mgl64.HomogRotate3DZ(math.Pi / 2)
+	if apply {
+		LighthouseTransform = mgl64.HomogRotate3DX(math.Pi).Mul4(LighthouseTransform)
+	}
+	svc.zFlipApplied = apply
+	svc.logger.Infof("Z-flip correction set to %v", apply)
+}
+
+// ---------------------------------------------------------------------------
 // Calibration
 // ---------------------------------------------------------------------------
 
@@ -632,7 +676,8 @@ func ComputeCalibYaw(m mgl64.Mat4) (float64, bool) {
 }
 
 type calibData struct {
-	Yaw float64 `json:"yaw"`
+	Yaw   float64 `json:"yaw"`
+	ZFlip bool    `json:"z_flip,omitempty"`
 }
 
 func (svc *teleopService) loadCalib() {
@@ -651,7 +696,8 @@ func (svc *teleopService) loadCalib() {
 	svc.calibYaw = cd.Yaw
 	svc.calibSet = true
 	svc.calibMu.Unlock()
-	svc.logger.Infof("Calibration loaded: %.1f°", cd.Yaw*180/math.Pi)
+	svc.setZFlip(cd.ZFlip)
+	svc.logger.Infof("Calibration loaded: yaw=%.1f° z_flip=%v", cd.Yaw*180/math.Pi, cd.ZFlip)
 }
 
 func (svc *teleopService) saveCalib(yaw float64) {
@@ -660,11 +706,11 @@ func (svc *teleopService) saveCalib(yaw float64) {
 	svc.calibSet = true
 	svc.calibMu.Unlock()
 	path := filepath.Join(svc.calibDir, "calibration.json")
-	b, _ := json.Marshal(calibData{Yaw: yaw})
+	b, _ := json.Marshal(calibData{Yaw: yaw, ZFlip: svc.zFlipApplied})
 	if err := os.WriteFile(path, b, 0644); err != nil {
 		svc.logger.Warnf("Failed to save calibration: %v", err)
 	} else {
-		svc.logger.Infof("Calibrated forward: %.1f° (saved)", yaw*180/math.Pi)
+		svc.logger.Infof("Calibrated forward: yaw=%.1f° z_flip=%v (saved)", yaw*180/math.Pi, svc.zFlipApplied)
 	}
 }
 
@@ -864,12 +910,8 @@ func (svc *teleopService) pollLoop(ctx context.Context, hz int) {
 				upZ := survive.FrameUpZ()
 				if upZ != 0 {
 					svc.frameChecked.Store(true)
-					if upZ < 0 {
-						svc.logger.Warnf("Frame Z-flip detected (upZ=%.2f), applying 180° X correction", upZ)
-						LighthouseTransform = mgl64.HomogRotate3DX(math.Pi).Mul4(LighthouseTransform)
-					} else {
-						svc.logger.Infof("Frame orientation OK (upZ=%.2f)", upZ)
-					}
+					svc.setZFlip(upZ < 0)
+					svc.logger.Infof("Frame solve complete (upZ=%.2f, z_flip=%v)", upZ, svc.zFlipApplied)
 				}
 			}
 			svc.discoverAndAssignControllers()
@@ -1018,6 +1060,10 @@ func (h *teleopHand) tick(ctx context.Context, cs ControllerState) {
 		y := cs.Trackpad[1]
 		if y < -0.3 {
 			// Up: calibrate forward direction.
+			if !ValidateFrameUp(cs.Mat) {
+				h.svc.logger.Warnf("[%s] Controller up-axis inverted, toggling Z-flip (was %v)", h.name, h.svc.zFlipApplied)
+				h.svc.setZFlip(!h.svc.zFlipApplied)
+			}
 			if yaw, ok := ComputeCalibYaw(cs.Mat); ok {
 				h.svc.saveCalib(yaw)
 				h.sendHaptic(0.3, 80)
