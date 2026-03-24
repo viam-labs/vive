@@ -5,7 +5,7 @@ package survive
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/../libsurvive/include -I${SRCDIR}/../libsurvive/include/libsurvive -I${SRCDIR}/../libsurvive/include/libsurvive/redist -DSURVIVE_ENABLE_FULL_API
-#cgo LDFLAGS: -L${SRCDIR}/../libsurvive/lib -lsurvive -Wl,-rpath,${SRCDIR}/../libsurvive/lib
+#cgo LDFLAGS: -L${SRCDIR}/../libsurvive/lib -lsurvive -lm -Wl,-rpath,${SRCDIR}/../libsurvive/lib
 #include <survive_api.h>
 #include <survive.h>
 #include <linmath.h>
@@ -149,13 +149,25 @@ static float vr_frame_up_z(void) {
     if (!gCtx) return 0;
     SurviveContext *ctx = survive_simple_get_ctx(gCtx);
     if (!ctx) return 0;
+    // Check all lighthouses, pick the one with the strongest accel magnitude.
+    // Skip any where accel hasn't been populated from OOTX yet.
+    float best_z = 0;
+    float best_mag = 0;
     for (int i = 0; i < NUM_GEN2_LIGHTHOUSES; i++) {
         if (!ctx->bsd[i].PositionSet) continue;
+        FLT ax = ctx->bsd[i].accel[0];
+        FLT ay = ctx->bsd[i].accel[1];
+        FLT az = ctx->bsd[i].accel[2];
+        FLT accelMag = sqrt(ax*ax + ay*ay + az*az);
+        if (accelMag < 0.5) continue; // accel not yet populated
         FLT worldUp[3];
         quatrotatevector(worldUp, ctx->bsd[i].Pose.Rot, ctx->bsd[i].accel);
-        return (float)worldUp[2];
+        if (fabs(worldUp[2]) > fabs(best_z)) {
+            best_z = (float)worldUp[2];
+            best_mag = (float)accelMag;
+        }
     }
-    return 0;
+    return best_z;
 }
 */
 import "C"
