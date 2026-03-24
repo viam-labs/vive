@@ -5,7 +5,7 @@ package survive
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/../libsurvive/include -I${SRCDIR}/../libsurvive/include/libsurvive -I${SRCDIR}/../libsurvive/include/libsurvive/redist -DSURVIVE_ENABLE_FULL_API
-#cgo LDFLAGS: -L${SRCDIR}/../libsurvive/lib -lsurvive -Wl,-rpath,${SRCDIR}/../libsurvive/lib
+#cgo LDFLAGS: -L${SRCDIR}/../libsurvive/lib -lsurvive -lm -Wl,-rpath,${SRCDIR}/../libsurvive/lib
 #include <survive_api.h>
 #include <survive.h>
 #include <linmath.h>
