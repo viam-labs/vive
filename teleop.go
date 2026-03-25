@@ -1187,7 +1187,7 @@ func (h *teleopHand) teleopStatusLoop(ctx context.Context) {
 				if errVal, ok := statusMap["error"]; ok && errVal != nil {
 					if errStr, ok := errVal.(string); ok && errStr != "" {
 						h.svc.logger.Warnf("[%s] teleop error: %s", h.name, errStr)
-						h.sendHaptic(0.8, 200)
+						h.sendHaptic(0.3, 100)
 					}
 				}
 				// Log RDK-side timing into session JSONL.
@@ -1559,7 +1559,7 @@ func (h *teleopHand) controlFrame(ctx context.Context, cs ControllerState) {
 					h.svc.logger.Warnf("[%s] teleop_move err: %v", h.name, err)
 				}
 				h.errorTimeout = time.Now().Add(errorCooldown)
-				h.sendHaptic(0.8, 200)
+				h.sendHaptic(0.3, 100)
 				if strings.Contains(err.Error(), "not running") {
 					h.teleopActive = false
 					h.isControlling = false
