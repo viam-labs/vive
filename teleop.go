@@ -48,6 +48,8 @@ type HandConfig struct {
 	PosDeadzoneMM   float64 `json:"pos_deadzone_mm,omitempty"`
 	RotDeadzoneDeg  float64 `json:"rot_deadzone_deg,omitempty"`
 	SmoothAlpha     float64 `json:"smooth_alpha,omitempty"`
+	OutlierPosMM    float64 `json:"outlier_pos_mm,omitempty"`
+	OutlierRotDeg   float64 `json:"outlier_rot_deg,omitempty"`
 }
 
 type TeleopConfig struct {
@@ -172,9 +174,14 @@ type teleopHand struct {
 	lastSentPose     *Pose
 	deadzoneFiltered int
 
-	// EMA smoothing state
-	smoothAlpha  float64
-	smoothedPose *Pose
+	// smoothing state (SLERP for rotation, EMA for position)
+	smoothAlpha float64
+	smoothState *SmoothState
+
+	// outlier rejection thresholds (0 = disabled)
+	outlierPosMM  float64
+	outlierRotDeg float64
+	outlierStreak int
 
 	// reference capture (on grip press)
 	ctrlRefPos      [3]float64
@@ -289,7 +296,15 @@ func NewTeleopService(ctx context.Context, deps resource.Dependencies, name reso
 		}
 		smoothAlpha := hc.SmoothAlpha
 		if smoothAlpha <= 0 {
-			smoothAlpha = 0.2
+			smoothAlpha = 0.4
+		}
+		outlierPosMM := hc.OutlierPosMM
+		if outlierPosMM <= 0 {
+			outlierPosMM = 50.0 // 50mm/frame @ 90Hz ≈ 4.5 m/s
+		}
+		outlierRotDeg := hc.OutlierRotDeg
+		if outlierRotDeg <= 0 {
+			outlierRotDeg = 30.0 // 30°/frame @ 90Hz ≈ 2700°/s
 		}
 
 		h := &teleopHand{
@@ -309,6 +324,8 @@ func NewTeleopService(ctx context.Context, deps resource.Dependencies, name reso
 			posDeadzone:     posDeadzone,
 			rotDeadzone:     rotDeadzone,
 			smoothAlpha:     smoothAlpha,
+			outlierPosMM:    outlierPosMM,
+			outlierRotDeg:   outlierRotDeg,
 			svc:             svc,
 		}
 		h.gripperDesired.Store(830)
@@ -1271,7 +1288,7 @@ func (h *teleopHand) startControl(ctx context.Context, cs ControllerState) {
 
 		h.errorTimeout = time.Time{}
 		h.lastSentPose = nil
-		h.smoothedPose = nil
+		h.smoothState = nil
 		h.isControlling = true
 		h.sendHaptic(0.5, 100)
 		h.svc.logger.Infof("[%s] control started at (%.1f, %.1f, %.1f)", h.name, pt.X, pt.Y, pt.Z)
@@ -1297,30 +1314,63 @@ func (h *teleopHand) controlFrame(ctx context.Context, cs ControllerState) {
 	ty := h.robotRefPos[1] + delta[1]*scaleMM
 	tz := h.robotRefPos[2] + delta[2]*scaleMM
 
-	var tox, toy, toz, thetaDeg float64
+	// Compute target rotation as a quaternion (avoids OV singularity during smoothing).
+	var targetQuat mgl64.Quat
 	if h.rotEnabled {
 		if h.absoluteRot {
 			absRotRobot := h.calibTransform.Mul4(cs.Mat)
 			gripCorrection := mgl64.HomogRotate3DX(math.Pi / 2).Mul4(mgl64.HomogRotate3DZ(70.0 * math.Pi / 180.0))
 			corrected := absRotRobot.Mul4(gripCorrection)
-			tox, toy, toz, thetaDeg = Mat4ToOVDeg(corrected)
+			targetQuat = mgl64.Mat4ToQuat(corrected).Normalize()
 		} else {
 			calibInv := h.calibTransform.Inv()
 			curRotRobot := h.calibTransform.Mul4(cs.Mat).Mul4(calibInv)
 			targetRot := curRotRobot.Mul4(h.ctrlToArmOffset)
-			tox, toy, toz, thetaDeg = Mat4ToOVDeg(targetRot)
+			targetQuat = mgl64.Mat4ToQuat(targetRot).Normalize()
 		}
 	} else {
-		tox, toy, toz, thetaDeg = Mat4ToOVDeg(h.robotRefMat)
+		targetQuat = mgl64.Mat4ToQuat(h.robotRefMat).Normalize()
 	}
 
-	if math.IsNaN(tx) || math.IsNaN(tox) || math.IsNaN(thetaDeg) {
+	rawPos := [3]float64{tx, ty, tz}
+
+	if math.IsNaN(tx) || math.IsNaN(targetQuat.W) {
 		return
 	}
 
-	rawCandidate := Pose{X: tx, Y: ty, Z: tz, OX: tox, OY: toy, OZ: toz, ThetaDeg: thetaDeg}
-	candidate := EmaSmooth(h.smoothedPose, rawCandidate, h.smoothAlpha)
-	h.smoothedPose = &candidate
+	// Outlier rejection: skip physically impossible jumps.
+	// Three layers: (1) raw-to-raw comparison prevents smoothing-lag false positives,
+	// (2) raw update on rejection prevents single-glitch cascades,
+	// (3) streak counter resets smooth state after sustained rejection (escape valve).
+	if IsOutlier(h.smoothState, rawPos, targetQuat, h.outlierPosMM, h.outlierRotDeg) {
+		h.outlierStreak++
+		h.smoothState.RawPos = rawPos
+		h.smoothState.RawQuat = targetQuat
+		if h.outlierStreak >= 5 {
+			// Tracking jumped permanently — accept new position and reset smooth state.
+			h.smoothState = &SmoothState{
+				Pos: rawPos, Quat: targetQuat.Normalize(),
+				RawPos: rawPos, RawQuat: targetQuat.Normalize(),
+			}
+			h.outlierStreak = 0
+			h.svc.logger.Infof("[%s] outlier streak reset: accepting new tracking position", h.name)
+			// Fall through to SmoothPose below.
+		} else {
+			h.writeLog(fmt.Sprintf(
+				`{"t":%d,"event":"outlier_rejected","seq":%d,"streak":%d}`+"\n",
+				now.UnixMilli(), h.frameSeq.Load(), h.outlierStreak,
+			))
+			return
+		}
+	}
+	h.outlierStreak = 0
+
+	// SLERP-smooth rotation, EMA-smooth position. OV conversion happens inside.
+	candidate, newState := SmoothPose(h.smoothState, rawPos, targetQuat, h.smoothAlpha)
+	h.smoothState = newState
+
+	// Also compute raw OV for logging (pre-smoothing).
+	rawOX, rawOY, rawOZ, rawTheta := QuatToOVDeg(targetQuat)
 
 	if !ExceedsDeadzone(h.lastSentPose, candidate, h.posDeadzone, h.rotDeadzone) {
 		h.deadzoneFiltered++
@@ -1370,10 +1420,14 @@ func (h *teleopHand) controlFrame(ctx context.Context, cs ControllerState) {
 		seq := h.frameSeq.Load()
 
 		// Write JSONL send entry (mutex-protected for concurrent ack writes).
+		// Includes raw (pre-smoothing) pose and nzz singularity indicator.
 		h.writeLog(fmt.Sprintf(
-			`{"t":%d,"seq":%d,"x":%f,"y":%f,"z":%f,"o_x":%f,"o_y":%f,"o_z":%f,"theta":%f,"drops":%d,"jump_mm":%.2f,"dz_filtered":%d}`+"\n",
+			`{"t":%d,"seq":%d,"x":%f,"y":%f,"z":%f,"o_x":%f,"o_y":%f,"o_z":%f,"theta":%f,`+
+				`"raw_x":%f,"raw_y":%f,"raw_z":%f,"raw_ox":%f,"raw_oy":%f,"raw_oz":%f,"raw_theta":%f,"nzz":%f,`+
+				`"drops":%d,"jump_mm":%.2f,"dz_filtered":%d}`+"\n",
 			now.UnixMilli(), seq, candidate.X, candidate.Y, candidate.Z,
 			candidate.OX, candidate.OY, candidate.OZ, candidate.ThetaDeg,
+			rawPos[0], rawPos[1], rawPos[2], rawOX, rawOY, rawOZ, rawTheta, rawOZ,
 			dropsSince, jumpMM, dzSince,
 		))
 
