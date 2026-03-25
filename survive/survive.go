@@ -28,6 +28,7 @@ typedef struct {
     int      stateValid;
     int      poseValid;
     float    mat[12];        // row-major 3×4 tracking matrix
+    float    qw, qx, qy, qz; // raw quaternion from libsurvive (WXYZ)
     uint64_t pressed;        // bitmask: bit1=menu, bit2=grip, bit32=trackpad
     float    axis0x, axis0y; // trackpad position
     float    axis1x;         // trigger value (0–1)
@@ -143,6 +144,10 @@ static VRControllerData vr_get_controller_by_name(const char *name) {
     if (timecode > 0) {
         out.poseValid = 1;
         quat_to_mat34(&pose, out.mat);
+        out.qw = (float)pose.Rot[0];
+        out.qx = (float)pose.Rot[1];
+        out.qy = (float)pose.Rot[2];
+        out.qz = (float)pose.Rot[3];
     }
 
     int32_t buttons = survive_simple_object_get_button_mask(obj);
@@ -210,6 +215,7 @@ type ControllerData struct {
 	StateValid bool
 	PoseValid  bool
 	Mat        [12]float32 // row-major 3×4 tracking matrix
+	Quat       [4]float64  // raw quaternion from libsurvive [W, X, Y, Z]
 	Pressed    uint64      // button bitmask
 	Axis0X     float64     // trackpad X
 	Axis0Y     float64     // trackpad Y
@@ -321,6 +327,12 @@ func GetController(name string) *ControllerData {
 	if cd.PoseValid {
 		for i := 0; i < 12; i++ {
 			cd.Mat[i] = float32(data.mat[i])
+		}
+		cd.Quat = [4]float64{
+			float64(data.qw),
+			float64(data.qx),
+			float64(data.qy),
+			float64(data.qz),
 		}
 	}
 	return cd

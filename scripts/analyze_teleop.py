@@ -124,11 +124,50 @@ def main():
         print(f"  Correlation (drops vs jump_mm): {corr:.3f}")
         print()
 
+    # Extract raw vs smoothed OV components (if present in log).
+    has_raw = "raw_ox" in sends[0]
+    if has_raw:
+        raw_ox = np.array([s.get("raw_ox", 0) for s in sends])
+        raw_oy = np.array([s.get("raw_oy", 0) for s in sends])
+        raw_oz = np.array([s.get("raw_oz", 0) for s in sends])
+        raw_theta = np.array([s.get("raw_theta", 0) for s in sends])
+        smooth_ox = np.array([s.get("o_x", 0) for s in sends])
+        smooth_oy = np.array([s.get("o_y", 0) for s in sends])
+        smooth_oz = np.array([s.get("o_z", 0) for s in sends])
+        smooth_theta = np.array([s.get("theta", 0) for s in sends])
+        nzz = np.array([s.get("nzz", 0) for s in sends])
+
+    # Count outlier rejections.
+    outlier_count = sum(1 for s, a, r in [(sends, acks, rdk_statuses)] for _ in [] )  # placeholder
+    with open(path) as f:
+        outlier_count = sum(1 for line in f if '"outlier_rejected"' in line)
+    if outlier_count > 0:
+        print(f"  Outlier rejections: {outlier_count}")
+        print()
+
     # Determine plot layout based on available data.
     has_rdk = len(rdk_times) > 0
     nrows = 5 if has_rdk else 4
+    if has_raw:
+        nrows += 2  # raw-vs-smoothed OV + nzz singularity plot
     fig, axes = plt.subplots(nrows, 1, figsize=(14, 2.5 * nrows), sharex=True)
     fig.suptitle(f"Teleop Session: {Path(path).name}", fontsize=14)
+
+    # Helper: shade singularity regions (|nzz| > 0.95) across a subplot.
+    def shade_singularity(ax):
+        if not has_raw:
+            return
+        in_sing = np.abs(nzz) > 0.95
+        i = 0
+        while i < len(in_sing):
+            if in_sing[i]:
+                start = i
+                while i < len(in_sing) and in_sing[i]:
+                    i += 1
+                ax.axvspan(times_sec[start], times_sec[min(i - 1, len(times_sec) - 1)],
+                           alpha=0.15, color="red", zorder=0)
+            else:
+                i += 1
 
     # 1. gRPC round-trip.
     ax = axes[0]
@@ -139,6 +178,7 @@ def main():
     ax.set_ylabel("gRPC (ms)")
     ax.set_title("gRPC Round-Trip Time (vive module)")
     ax.grid(True, alpha=0.3)
+    shade_singularity(ax)
 
     # 2. RDK pipeline breakdown (if available).
     if has_rdk:
@@ -151,6 +191,7 @@ def main():
         ax.set_title("RDK Pipeline Breakdown")
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
+        shade_singularity(ax)
         plot_offset = 2
     else:
         plot_offset = 1
@@ -164,6 +205,7 @@ def main():
     ax.set_ylabel("Drop Rate (%)")
     ax.set_title("Drop Rate (10-send window)")
     ax.grid(True, alpha=0.3)
+    shade_singularity(ax)
 
     # 4. Jump distance.
     ax = axes[plot_offset + 1]
@@ -171,16 +213,44 @@ def main():
     ax.set_ylabel("Jump (mm)")
     ax.set_title("Pose Jump Distance Between Sends")
     ax.grid(True, alpha=0.3)
+    shade_singularity(ax)
 
     # 5. Drops + deadzone filtered per send.
     ax = axes[plot_offset + 2]
     ax.bar(times_sec, dz_filtered, width=0.05, alpha=0.5, color="orange", label="Deadzone filtered")
     ax.bar(times_sec, drops, width=0.05, alpha=0.7, color="red", label="Drops before send")
     ax.set_ylabel("Count")
-    ax.set_xlabel("Time (s)")
     ax.set_title("Per-Send: Drops & Deadzone Filtered Frames")
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
+    shade_singularity(ax)
+
+    # 6. Raw vs Smoothed OV components (if present).
+    if has_raw:
+        ax = axes[plot_offset + 3]
+        ax.plot(times_sec, raw_oz, "r-", alpha=0.5, linewidth=0.8, label="raw OZ (nzz)")
+        ax.plot(times_sec, smooth_oz, "b-", alpha=0.8, linewidth=0.8, label="smoothed OZ")
+        ax.plot(times_sec, raw_theta, "m-", alpha=0.4, linewidth=0.6, label="raw theta")
+        ax.plot(times_sec, smooth_theta, "c-", alpha=0.7, linewidth=0.6, label="smoothed theta")
+        ax.set_ylabel("OV component")
+        ax.set_title("Raw vs Smoothed Orientation (OZ + Theta)")
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+        shade_singularity(ax)
+
+        # 7. nzz singularity indicator.
+        ax = axes[plot_offset + 4]
+        ax.plot(times_sec, nzz, "k-", alpha=0.8, linewidth=0.8)
+        ax.axhline(y=0.95, color="r", linestyle="--", alpha=0.6, label="singularity threshold")
+        ax.axhline(y=-0.95, color="r", linestyle="--", alpha=0.6)
+        ax.set_ylabel("nzz")
+        ax.set_title("OV Singularity Indicator (|nzz| > 0.95 = danger zone)")
+        ax.set_ylim(-1.1, 1.1)
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+        shade_singularity(ax)
+
+    axes[-1].set_xlabel("Time (s)")
 
     plt.tight_layout()
     out_path = Path(path).with_suffix(".png")

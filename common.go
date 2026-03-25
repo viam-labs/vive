@@ -20,6 +20,7 @@ type ControllerState struct {
 	Connected       bool
 	Pos             [3]float64 // x, y, z (meters)
 	Mat             mgl64.Mat4 // full 4×4 homogeneous transform
+	Quat            [4]float64 // raw libsurvive quaternion [W, X, Y, Z]
 	Trigger         float64
 	TriggerPressed  bool
 	Grip            bool
@@ -118,6 +119,7 @@ type Pose struct {
 }
 
 // EmaSmooth applies exponential moving average smoothing to a pose.
+// Deprecated: Use SmoothPose for rotation-aware smoothing via SLERP.
 func EmaSmooth(prev *Pose, raw Pose, alpha float64) Pose {
 	if prev == nil || alpha >= 1.0 {
 		return raw
@@ -132,6 +134,79 @@ func EmaSmooth(prev *Pose, raw Pose, alpha float64) Pose {
 		OZ:       alpha*raw.OZ + b*prev.OZ,
 		ThetaDeg: alpha*raw.ThetaDeg + b*prev.ThetaDeg,
 	}
+}
+
+// SmoothState holds the previous smoothed position and quaternion for
+// rotation-aware (SLERP) smoothing between frames.
+type SmoothState struct {
+	Pos  [3]float64
+	Quat mgl64.Quat
+}
+
+// SmoothPose applies EMA to position and SLERP to rotation. This avoids the
+// orientation-vector singularity that causes erratic behavior near ±90° pitch.
+// alpha controls responsiveness: 0 = frozen, 1 = no smoothing.
+func SmoothPose(state *SmoothState, rawPos [3]float64, rawQuat mgl64.Quat, alpha float64) (Pose, *SmoothState) {
+	rawQuat = rawQuat.Normalize()
+
+	if state == nil || alpha >= 1.0 {
+		ox, oy, oz, th := QuatToOVDeg(rawQuat)
+		return Pose{X: rawPos[0], Y: rawPos[1], Z: rawPos[2], OX: ox, OY: oy, OZ: oz, ThetaDeg: th},
+			&SmoothState{Pos: rawPos, Quat: rawQuat}
+	}
+
+	// EMA for position (Euclidean — fine for translation).
+	b := 1.0 - alpha
+	smoothPos := [3]float64{
+		alpha*rawPos[0] + b*state.Pos[0],
+		alpha*rawPos[1] + b*state.Pos[1],
+		alpha*rawPos[2] + b*state.Pos[2],
+	}
+
+	// Ensure quaternion hemisphere consistency: if the dot product is negative,
+	// negate the raw quaternion to take the short path around the rotation sphere.
+	if state.Quat.Dot(rawQuat) < 0 {
+		rawQuat = rawQuat.Scale(-1)
+	}
+
+	// SLERP for rotation — singularity-free.
+	smoothQuat := mgl64.QuatSlerp(state.Quat, rawQuat, alpha)
+
+	ox, oy, oz, th := QuatToOVDeg(smoothQuat)
+	return Pose{X: smoothPos[0], Y: smoothPos[1], Z: smoothPos[2], OX: ox, OY: oy, OZ: oz, ThetaDeg: th},
+		&SmoothState{Pos: smoothPos, Quat: smoothQuat}
+}
+
+// IsOutlier returns true if the raw pose represents a physically impossible jump
+// from the previous smoothed state. Used to reject tracking glitches.
+func IsOutlier(prev *SmoothState, rawPos [3]float64, rawQuat mgl64.Quat, maxPosMM, maxRotDeg float64) bool {
+	if prev == nil {
+		return false
+	}
+
+	// Position jump in mm.
+	dx := rawPos[0] - prev.Pos[0]
+	dy := rawPos[1] - prev.Pos[1]
+	dz := rawPos[2] - prev.Pos[2]
+	posDist := math.Sqrt(dx*dx+dy*dy+dz*dz) * 1000 // meters → mm
+	if maxPosMM > 0 && posDist > maxPosMM {
+		return true
+	}
+
+	// Angular distance between quaternions in degrees.
+	dot := prev.Quat.Dot(rawQuat.Normalize())
+	if dot < 0 {
+		dot = -dot
+	}
+	if dot > 1 {
+		dot = 1
+	}
+	angleDeg := 2 * math.Acos(dot) * 180 / math.Pi
+	if maxRotDeg > 0 && angleDeg > maxRotDeg {
+		return true
+	}
+
+	return false
 }
 
 // ValidateFrameUp checks whether the controller's "up" direction (body Y-axis,
