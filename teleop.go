@@ -288,15 +288,15 @@ func NewTeleopService(ctx context.Context, deps resource.Dependencies, name reso
 		}
 		posDeadzone := hc.PosDeadzoneMM
 		if posDeadzone <= 0 {
-			posDeadzone = 2.0
+			posDeadzone = 3.0
 		}
 		rotDeadzone := hc.RotDeadzoneDeg
 		if rotDeadzone <= 0 {
-			rotDeadzone = 2.0
+			rotDeadzone = 3.0
 		}
 		smoothAlpha := hc.SmoothAlpha
 		if smoothAlpha <= 0 {
-			smoothAlpha = 0.4
+			smoothAlpha = 0.15
 		}
 		outlierPosMM := hc.OutlierPosMM
 		if outlierPosMM <= 0 {
@@ -1289,6 +1289,7 @@ func (h *teleopHand) startControl(ctx context.Context, cs ControllerState) {
 		h.errorTimeout = time.Time{}
 		h.lastSentPose = nil
 		h.smoothState = nil
+		h.outlierStreak = 0
 		h.isControlling = true
 		h.sendHaptic(0.5, 100)
 		h.svc.logger.Infof("[%s] control started at (%.1f, %.1f, %.1f)", h.name, pt.X, pt.Y, pt.Z)
@@ -1370,7 +1371,9 @@ func (h *teleopHand) controlFrame(ctx context.Context, cs ControllerState) {
 	h.smoothState = newState
 
 	// Also compute raw OV for logging (pre-smoothing).
+	// rawOZ == nzz (Z-component of the OV direction vector, singularity indicator).
 	rawOX, rawOY, rawOZ, rawTheta := QuatToOVDeg(targetQuat)
+	nzz := rawOZ
 
 	if !ExceedsDeadzone(h.lastSentPose, candidate, h.posDeadzone, h.rotDeadzone) {
 		h.deadzoneFiltered++
@@ -1427,7 +1430,7 @@ func (h *teleopHand) controlFrame(ctx context.Context, cs ControllerState) {
 				`"drops":%d,"jump_mm":%.2f,"dz_filtered":%d}`+"\n",
 			now.UnixMilli(), seq, candidate.X, candidate.Y, candidate.Z,
 			candidate.OX, candidate.OY, candidate.OZ, candidate.ThetaDeg,
-			rawPos[0], rawPos[1], rawPos[2], rawOX, rawOY, rawOZ, rawTheta, rawOZ,
+			rawPos[0], rawPos[1], rawPos[2], rawOX, rawOY, rawOZ, rawTheta, nzz,
 			dropsSince, jumpMM, dzSince,
 		))
 

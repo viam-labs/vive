@@ -138,7 +138,6 @@ def main():
         nzz = np.array([s.get("nzz", 0) for s in sends])
 
     # Count outlier rejections.
-    outlier_count = sum(1 for s, a, r in [(sends, acks, rdk_statuses)] for _ in [] )  # placeholder
     with open(path) as f:
         outlier_count = sum(1 for line in f if '"outlier_rejected"' in line)
     if outlier_count > 0:

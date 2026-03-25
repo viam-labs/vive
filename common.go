@@ -118,24 +118,6 @@ type Pose struct {
 	OX, OY, OZ, ThetaDeg float64
 }
 
-// EmaSmooth applies exponential moving average smoothing to a pose.
-// Deprecated: Use SmoothPose for rotation-aware smoothing via SLERP.
-func EmaSmooth(prev *Pose, raw Pose, alpha float64) Pose {
-	if prev == nil || alpha >= 1.0 {
-		return raw
-	}
-	b := 1.0 - alpha
-	return Pose{
-		X:        alpha*raw.X + b*prev.X,
-		Y:        alpha*raw.Y + b*prev.Y,
-		Z:        alpha*raw.Z + b*prev.Z,
-		OX:       alpha*raw.OX + b*prev.OX,
-		OY:       alpha*raw.OY + b*prev.OY,
-		OZ:       alpha*raw.OZ + b*prev.OZ,
-		ThetaDeg: alpha*raw.ThetaDeg + b*prev.ThetaDeg,
-	}
-}
-
 // SmoothState holds the previous smoothed position and quaternion for
 // rotation-aware (SLERP) smoothing between frames, plus the previous
 // raw values for outlier detection (raw-to-raw comparison avoids
