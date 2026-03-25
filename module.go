@@ -152,6 +152,7 @@ func (s *viveController) UpdateState() *ControllerState {
 		m := Mat34ToMat4(data.Mat)
 		cs.Mat = m
 		cs.Pos = [3]float64{m.At(0, 3), m.At(1, 3), m.At(2, 3)}
+		cs.Quat = data.Quat
 	}
 
 	now := time.Now()
