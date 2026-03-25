@@ -194,6 +194,27 @@ static float vr_frame_up_z(void) {
     }
     return best_z;
 }
+
+// vr_lighthouse_max_variance returns the maximum variance component across
+// all 6 DOF (3 position + 3 rotation) for the given lighthouse index.
+// Returns -1 if the lighthouse is not available or not solved.
+static float vr_lighthouse_max_variance(int idx) {
+    if (!gCtx) return -1;
+    SurviveContext *ctx = survive_simple_get_ctx(gCtx);
+    if (!ctx || idx < 0 || idx >= NUM_GEN2_LIGHTHOUSES) return -1;
+    if (!ctx->bsd[idx].PositionSet) return -1;
+    float maxVar = 0;
+    for (int i = 0; i < 3; i++) {
+        if (ctx->bsd[idx].variance.Pos[i] > maxVar) maxVar = ctx->bsd[idx].variance.Pos[i];
+        if (ctx->bsd[idx].variance.AxisAngleRot[i] > maxVar) maxVar = ctx->bsd[idx].variance.AxisAngleRot[i];
+    }
+    return maxVar;
+}
+
+// vr_lighthouse_count returns the number of lighthouses (NUM_GEN2_LIGHTHOUSES).
+static int vr_lighthouse_count(void) {
+    return NUM_GEN2_LIGHTHOUSES;
+}
 */
 import "C"
 
@@ -349,4 +370,16 @@ func Haptic(name string, amplitude, durationMs float64) {
 // in the world frame. Positive = Z-up (correct), negative = Z-flipped.
 func FrameUpZ() float64 {
 	return float64(C.vr_frame_up_z())
+}
+
+// LighthouseMaxVariance returns the maximum variance component (across 6 DOF)
+// for the given lighthouse index. Returns -1 if the lighthouse is unavailable.
+// Lower values indicate a better-converged solve (good: <0.001, ideal: <0.0001).
+func LighthouseMaxVariance(idx int) float64 {
+	return float64(C.vr_lighthouse_max_variance(C.int(idx)))
+}
+
+// LighthouseCount returns the number of lighthouse slots (NUM_GEN2_LIGHTHOUSES).
+func LighthouseCount() int {
+	return int(C.vr_lighthouse_count())
 }

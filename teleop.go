@@ -296,7 +296,7 @@ func NewTeleopService(ctx context.Context, deps resource.Dependencies, name reso
 		}
 		smoothAlpha := hc.SmoothAlpha
 		if smoothAlpha <= 0 {
-			smoothAlpha = 0.15
+			smoothAlpha = 0.05
 		}
 		outlierPosMM := hc.OutlierPosMM
 		if outlierPosMM <= 0 {
@@ -403,6 +403,24 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 			"frame_up_z":     upZ,
 			"z_flip_applied": svc.zFlipApplied,
 			"frame_checked":  svc.frameChecked.Load(),
+		}, nil
+	}
+
+	if _, ok := cmd["get_lighthouse_variance"]; ok {
+		nLH := survive.LighthouseCount()
+		lhVars := make([]float64, nLH)
+		maxVar := float64(0)
+		for i := 0; i < nLH; i++ {
+			v := survive.LighthouseMaxVariance(i)
+			lhVars[i] = v
+			if v > maxVar {
+				maxVar = v
+			}
+		}
+		return map[string]interface{}{
+			"lighthouse_variances": lhVars,
+			"max_variance":        maxVar,
+			"converged":           maxVar > 0 && maxVar < 0.001,
 		}, nil
 	}
 
@@ -658,6 +676,73 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 			}
 		}
 
+		// Phase 2: wait for variance to converge (solver needs diverse measurements).
+		// Keep polling so the solver gets new data from controller movements.
+		const varianceThreshold = 0.001
+		converged := false
+		if solved {
+			svc.logger.Info("Base stations detected — slowly wave controllers around the tracking area for best calibration quality...")
+			// Haptic pulse on all connected controllers to signal "move me".
+			nObj := survive.ObjectCount()
+			for i := 0; i < nObj; i++ {
+				info := survive.GetObjectInfo(i)
+				if info.IsController {
+					survive.Haptic(info.Name, 0.5, 200)
+				}
+			}
+			convergenceDeadline := time.Now().Add(60 * time.Second)
+			lastLog := time.Time{}
+			for time.Now().Before(convergenceDeadline) {
+				if ctx.Err() != nil {
+					break
+				}
+				survive.PollEvents()
+
+				// Check every 500ms.
+				if time.Since(lastLog) < 500*time.Millisecond {
+					time.Sleep(50 * time.Millisecond)
+					continue
+				}
+				lastLog = time.Now()
+
+				maxVar := float64(0)
+				nLH := survive.LighthouseCount()
+				for i := 0; i < nLH; i++ {
+					v := survive.LighthouseMaxVariance(i)
+					if v > maxVar {
+						maxVar = v
+					}
+				}
+
+				if maxVar <= 0 {
+					// No lighthouses reporting variance yet.
+					continue
+				}
+
+				svc.logger.Infof("Convergence: max lighthouse variance=%.6f (target <%.4f)", maxVar, varianceThreshold)
+
+				if maxVar < varianceThreshold {
+					converged = true
+					svc.logger.Info("Base station solve converged — tracking quality is good")
+					break
+				}
+			}
+			if !converged {
+				// Report final variance even if we didn't converge.
+				maxVar := float64(0)
+				nLH := survive.LighthouseCount()
+				lhVars := make([]float64, nLH)
+				for i := 0; i < nLH; i++ {
+					v := survive.LighthouseMaxVariance(i)
+					lhVars[i] = v
+					if v > maxVar {
+						maxVar = v
+					}
+				}
+				svc.logger.Warnf("Convergence timeout: max variance=%.6f (target was <%.4f). Try waving controllers during recalibrate.", maxVar, varianceThreshold)
+			}
+		}
+
 		svc.surviveMu.Unlock()
 
 		svc.controllersAssigned = false
@@ -667,8 +752,30 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 			return map[string]interface{}{"recalibrated": true, "base_stations_solved": false}, nil
 		}
 
-		svc.logger.Info("Recalibration complete — base stations solved. Use 'calibrate' or trackpad-up to set forward direction.")
-		return map[string]interface{}{"recalibrated": true, "base_stations_solved": true}, nil
+		// Collect final variance info for the response.
+		nLH := survive.LighthouseCount()
+		lhVars := make([]float64, nLH)
+		maxVar := float64(0)
+		for i := 0; i < nLH; i++ {
+			v := survive.LighthouseMaxVariance(i)
+			lhVars[i] = v
+			if v > maxVar {
+				maxVar = v
+			}
+		}
+
+		if converged {
+			svc.logger.Info("Recalibration complete — base stations converged. Use 'calibrate' or trackpad-up to set forward direction.")
+		} else {
+			svc.logger.Info("Recalibration complete — base stations solved but not fully converged. Use 'calibrate' or trackpad-up to set forward direction.")
+		}
+		return map[string]interface{}{
+			"recalibrated":         true,
+			"base_stations_solved": true,
+			"converged":            converged,
+			"max_variance":         maxVar,
+			"lighthouse_variances": lhVars,
+		}, nil
 	}
 
 	if taskCmd, ok := cmd["set_task"]; ok {
