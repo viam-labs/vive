@@ -1007,7 +1007,6 @@ func (svc *teleopService) pollLoop(ctx context.Context, hz int) {
 		}
 
 		survive.PollEvents()
-		svc.surviveMu.Unlock()
 
 		for _, h := range svc.hands {
 			cs := h.controller.UpdateState()
@@ -1020,6 +1019,7 @@ func (svc *teleopService) pollLoop(ctx context.Context, hz int) {
 			}
 			h.tick(ctx, *cs)
 		}
+		svc.surviveMu.Unlock()
 
 		elapsed := time.Since(start)
 		if sleep := interval - elapsed; sleep > 0 {
