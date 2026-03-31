@@ -805,9 +805,13 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 
 func (svc *teleopService) Close(ctx context.Context) error {
 	svc.cancelFunc()
+	// Use a short timeout so remote DoCommand calls in stopTeleop don't block
+	// server shutdown when the resources are already disconnected.
+	closeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
 	for _, h := range svc.hands {
 		if h.teleopActive {
-			h.stopTeleop(ctx)
+			h.stopTeleop(closeCtx)
 		}
 	}
 	return nil
