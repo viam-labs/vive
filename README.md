@@ -83,12 +83,12 @@ Returns:
       "scale": 1.0,
       // default: true — enable orientation tracking
       "rotation_enabled": true,
-      // default: 2.0 — position dead-zone in mm, suppresses jitter
-      "pos_deadzone_mm": 2,
-      // default: 2.0 — rotation dead-zone in degrees
-      "rot_deadzone_deg": 2,
-      // default: 0.2 — EMA smoothing alpha (0-1), lower = smoother
-      "smooth_alpha": 0.2
+      // default: 3.0 — position dead-zone in mm, suppresses jitter
+      "pos_deadzone_mm": 3,
+      // default: 3.0 — rotation dead-zone in degrees
+      "rot_deadzone_deg": 3,
+      // default: 0.05 — EMA smoothing alpha (0-1), lower = smoother
+      "smooth_alpha": 0.05
     },
     {
       "name": "right",
@@ -124,7 +124,43 @@ Returns:
 {"recalibrate": true}
 ```
 
-Clears cached base station positions and restarts tracking. Use this after a base station is bumped or moved. Blocks until base stations are re-solved (up to 30s). After it returns, use `calibrate` or trackpad-up to set the forward direction.
+Clears cached base station positions and restarts tracking. Use this after a base station is bumped or moved. The command:
+
+1. Deletes cached base station config and restarts libsurvive (~5-10s)
+2. Waits for base station solve convergence (up to 60s) — **wave controllers slowly around the tracking area** during this phase for best results. The controllers will buzz when this phase starts.
+3. Returns when both base stations agree on controller position (<2mm disagreement) and variance is low (<0.001), or after 60s timeout.
+
+After it returns, use `calibrate` or trackpad-up to set the forward direction.
+
+Returns:
+
+```json
+{"recalibrated": true, "converged": true, "max_variance": 0.00005, "lighthouse_disagreement_mm": 0.8, "active_lighthouses": 2}
+```
+
+**Get calibration quality:**
+
+```json
+{"get_calibration_quality": true}
+```
+
+Returns current tracking quality metrics. Use anytime to check if base stations are well-calibrated.
+
+```json
+{"max_variance": 0.00005, "lighthouse_disagreement_mm": 0.8, "converged": true, "active_lighthouses": 2, "cal_status": "...", "lighthouse_variances": [0.00003, 0.00005, ...]}
+```
+
+- `lighthouse_disagreement_mm` — position difference (mm) between per-lighthouse pose estimates. <2mm = good. >5mm = base stations need recalibration.
+- `max_variance` — worst-case lighthouse solve variance. <0.001 = good.
+- `converged` — true when both disagreement and variance are within thresholds.
+
+**Get lighthouse variance:**
+
+```json
+{"get_lighthouse_variance": true}
+```
+
+Returns per-lighthouse variance values for all lighthouse slots.
 
 **Get current calibration:**
 
@@ -197,7 +233,10 @@ Starts the Watchman dongle pairing flow. Power on each controller one at a time 
 ### Troubleshooting
 
 **Base station bumped / tracking is wrong:**
-Run the `recalibrate` DoCommand to clear cached base station geometry and restart tracking. The command blocks until base stations are re-solved. Then recalibrate the forward direction with trackpad-up or `{"calibrate": true}`.
+Run the `recalibrate` DoCommand to clear cached base station geometry and restart tracking. Wave controllers around during the convergence phase — the command will tell you when calibration quality is good. Then recalibrate the forward direction with trackpad-up or `{"calibrate": true}`.
+
+**Arm is jittery / noisy:**
+First check calibration quality: `{"get_calibration_quality": true}`. If `lighthouse_disagreement_mm` is >5mm, run `recalibrate`. If disagreement is low but arm is still noisy, check base station orientation (must face the tracking area) and increase `smooth_alpha` (lower value = more smoothing) or `pos_deadzone_mm` / `rot_deadzone_deg` in the hand config.
 
 ## Configure capture-control
 

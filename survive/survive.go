@@ -215,6 +215,50 @@ static float vr_lighthouse_max_variance(int idx) {
 static int vr_lighthouse_count(void) {
     return NUM_GEN2_LIGHTHOUSES;
 }
+
+// vr_lighthouse_disagreement computes the position distance (mm) between
+// per-lighthouse pose estimates for the named controller. If both lighthouses
+// are tracking the controller, their position estimates should agree within
+// ~1mm for well-calibrated base stations. Large disagreement (>5mm) indicates
+// the relative base station calibration is off.
+// Returns -1 if the controller or either per-LH pose is unavailable.
+static float vr_lighthouse_disagreement(const char *name) {
+    if (!gCtx) return -1;
+    if (!survive_simple_is_running(gCtx)) return -1;
+    SurviveSimpleObject *sobj = survive_simple_get_object(gCtx, name);
+    if (!sobj) return -1;
+    SurviveObject *so = survive_simple_get_survive_object(sobj);
+    if (!so) return -1;
+
+    // Find the two active lighthouses with valid FromLHPose.
+    int found = 0;
+    FLT pos[2][3];
+    SurviveContext *ctx = survive_simple_get_ctx(gCtx);
+    for (int i = 0; i < NUM_GEN2_LIGHTHOUSES && found < 2; i++) {
+        if (!ctx->bsd[i].PositionSet) continue;
+        SurvivePose *p = &so->FromLHPose[i];
+        // Check if the pose is populated (non-zero position).
+        if (p->Pos[0] == 0 && p->Pos[1] == 0 && p->Pos[2] == 0) continue;
+        pos[found][0] = p->Pos[0];
+        pos[found][1] = p->Pos[1];
+        pos[found][2] = p->Pos[2];
+        found++;
+    }
+    if (found < 2) return -1;
+
+    FLT dx = pos[0][0] - pos[1][0];
+    FLT dy = pos[0][1] - pos[1][1];
+    FLT dz = pos[0][2] - pos[1][2];
+    return (float)(sqrt(dx*dx + dy*dy + dz*dz) * 1000.0); // meters → mm
+}
+
+// vr_active_lighthouses returns the number of active lighthouses.
+static int vr_active_lighthouses(void) {
+    if (!gCtx) return 0;
+    SurviveContext *ctx = survive_simple_get_ctx(gCtx);
+    if (!ctx) return 0;
+    return ctx->activeLighthouses;
+}
 */
 import "C"
 
@@ -382,4 +426,18 @@ func LighthouseMaxVariance(idx int) float64 {
 // LighthouseCount returns the number of lighthouse slots (NUM_GEN2_LIGHTHOUSES).
 func LighthouseCount() int {
 	return int(C.vr_lighthouse_count())
+}
+
+// LighthouseDisagreement returns the position distance (mm) between the two
+// per-lighthouse pose estimates for the named controller. Well-calibrated base
+// stations should agree within ~1mm. Returns -1 if data is unavailable.
+func LighthouseDisagreement(name string) float64 {
+	cName := C.CString(name)
+	defer C.free(unsafe.Pointer(cName))
+	return float64(C.vr_lighthouse_disagreement(cName))
+}
+
+// ActiveLighthouses returns the number of active lighthouses.
+func ActiveLighthouses() int {
+	return int(C.vr_active_lighthouses())
 }

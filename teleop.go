@@ -424,6 +424,37 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 		}, nil
 	}
 
+	if _, ok := cmd["get_calibration_quality"]; ok {
+		maxVar := float64(0)
+		nLH := survive.LighthouseCount()
+		lhVars := make([]float64, nLH)
+		for i := 0; i < nLH; i++ {
+			v := survive.LighthouseMaxVariance(i)
+			lhVars[i] = v
+			if v > maxVar {
+				maxVar = v
+			}
+		}
+		maxDisagreement := float64(-1)
+		for _, h := range svc.hands {
+			if devName := h.controller.DeviceName(); devName != "" {
+				d := survive.LighthouseDisagreement(devName)
+				if d > maxDisagreement {
+					maxDisagreement = d
+				}
+			}
+		}
+		varianceOK := maxVar > 0 && maxVar < 0.001
+		disagreementOK := maxDisagreement >= 0 && maxDisagreement < 2.0
+		return map[string]interface{}{
+			"lighthouse_variances":       lhVars,
+			"max_variance":              maxVar,
+			"lighthouse_disagreement_mm": maxDisagreement,
+			"converged":                 varianceOK && disagreementOK,
+			"active_lighthouses":        survive.ActiveLighthouses(),
+		}, nil
+	}
+
 	if _, ok := cmd["status"]; ok {
 		status := make([]map[string]interface{}, len(svc.hands))
 		for i, h := range svc.hands {
@@ -676,13 +707,31 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 			}
 		}
 
-		// Phase 2: wait for variance to converge (solver needs diverse measurements).
-		// Keep polling so the solver gets new data from controller movements.
-		const varianceThreshold = 0.001
-		converged := false
-		if solved {
-			svc.logger.Info("Base stations detected — slowly wave controllers around the tracking area for best calibration quality...")
-			// Haptic pulse on all connected controllers to signal "move me".
+		// Release the lock so the poll loop resumes — it feeds the solver
+		// new measurement data as the user waves controllers around.
+		svc.surviveMu.Unlock()
+		svc.controllersAssigned = false
+
+		if !solved {
+			svc.frameChecked.Store(false)
+			svc.logger.Warn("Base stations did not solve within 60s — tracking may be unavailable")
+			return map[string]interface{}{"recalibrated": true, "base_stations_solved": false}, nil
+		}
+
+		// Phase 2: wait for convergence by monitoring inter-lighthouse agreement.
+		// The poll loop is running and feeding the solver. We passively check:
+		//   1. Lighthouse disagreement: do the two base stations agree on controller position?
+		//   2. Variance: has each individual lighthouse solve converged?
+		const (
+			varianceThreshold     = 0.001  // max acceptable variance per lighthouse
+			disagreementThreshold = 2.0    // max acceptable inter-LH disagreement (mm)
+			convergenceTimeout    = 60 * time.Second
+		)
+
+		svc.logger.Info("Base stations detected — slowly wave controllers around the tracking area for best calibration quality...")
+
+		// Haptic buzz on all controllers to signal "move me".
+		if svc.surviveMu.TryLock() {
 			nObj := survive.ObjectCount()
 			for i := 0; i < nObj; i++ {
 				info := survive.GetObjectInfo(i)
@@ -690,92 +739,93 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 					survive.Haptic(info.Name, 0.5, 200)
 				}
 			}
-			convergenceDeadline := time.Now().Add(60 * time.Second)
-			lastLog := time.Time{}
-			for time.Now().Before(convergenceDeadline) {
-				if ctx.Err() != nil {
-					break
-				}
-				survive.PollEvents()
+			svc.surviveMu.Unlock()
+		}
 
-				// Check every 500ms.
-				if time.Since(lastLog) < 500*time.Millisecond {
-					time.Sleep(50 * time.Millisecond)
-					continue
-				}
-				lastLog = time.Now()
+		converged := false
+		convergenceDeadline := time.Now().Add(convergenceTimeout)
+		lastLog := time.Time{}
+		var finalDisagreement, finalMaxVar float64
 
-				maxVar := float64(0)
-				nLH := survive.LighthouseCount()
-				for i := 0; i < nLH; i++ {
-					v := survive.LighthouseMaxVariance(i)
-					if v > maxVar {
-						maxVar = v
+		for time.Now().Before(convergenceDeadline) {
+			if ctx.Err() != nil {
+				break
+			}
+
+			// Check every 500ms.
+			if time.Since(lastLog) < 500*time.Millisecond {
+				time.Sleep(50 * time.Millisecond)
+				continue
+			}
+			lastLog = time.Now()
+
+			// Read variance (read-only access to C struct, safe without lock).
+			maxVar := float64(0)
+			nLH := survive.LighthouseCount()
+			for i := 0; i < nLH; i++ {
+				v := survive.LighthouseMaxVariance(i)
+				if v > maxVar {
+					maxVar = v
+				}
+			}
+
+			// Read per-lighthouse disagreement for each controller.
+			maxDisagreement := float64(-1)
+			for _, h := range svc.hands {
+				if devName := h.controller.DeviceName(); devName != "" {
+					d := survive.LighthouseDisagreement(devName)
+					if d > maxDisagreement {
+						maxDisagreement = d
 					}
 				}
-
-				if maxVar <= 0 {
-					// No lighthouses reporting variance yet.
-					continue
-				}
-
-				svc.logger.Infof("Convergence: max lighthouse variance=%.6f (target <%.4f)", maxVar, varianceThreshold)
-
-				if maxVar < varianceThreshold {
-					converged = true
-					svc.logger.Info("Base station solve converged — tracking quality is good")
-					break
-				}
 			}
-			if !converged {
-				// Report final variance even if we didn't converge.
-				maxVar := float64(0)
-				nLH := survive.LighthouseCount()
-				lhVars := make([]float64, nLH)
-				for i := 0; i < nLH; i++ {
-					v := survive.LighthouseMaxVariance(i)
-					lhVars[i] = v
-					if v > maxVar {
-						maxVar = v
-					}
-				}
-				svc.logger.Warnf("Convergence timeout: max variance=%.6f (target was <%.4f). Try waving controllers during recalibrate.", maxVar, varianceThreshold)
+
+			finalDisagreement = maxDisagreement
+			finalMaxVar = maxVar
+
+			activeLH := survive.ActiveLighthouses()
+
+			if maxVar <= 0 {
+				svc.logger.Infof("Calibrating: waiting for solve data... (active lighthouses: %d)", activeLH)
+				continue
 			}
-		}
 
-		svc.surviveMu.Unlock()
+			if maxDisagreement >= 0 {
+				svc.logger.Infof("Calibrating: LH disagreement=%.1fmm, variance=%.6f (target: <%.0fmm, <%.4f)",
+					maxDisagreement, maxVar, disagreementThreshold, varianceThreshold)
+			} else {
+				svc.logger.Infof("Calibrating: variance=%.6f, LH disagreement unavailable — ensure both base stations see a controller (target: <%.4f)",
+					maxVar, varianceThreshold)
+			}
 
-		svc.controllersAssigned = false
-		if !solved {
-			svc.frameChecked.Store(false)
-			svc.logger.Warn("Base stations did not solve within 60s — tracking may be unavailable")
-			return map[string]interface{}{"recalibrated": true, "base_stations_solved": false}, nil
-		}
-
-		// Collect final variance info for the response.
-		nLH := survive.LighthouseCount()
-		lhVars := make([]float64, nLH)
-		maxVar := float64(0)
-		for i := 0; i < nLH; i++ {
-			v := survive.LighthouseMaxVariance(i)
-			lhVars[i] = v
-			if v > maxVar {
-				maxVar = v
+			varianceOK := maxVar < varianceThreshold
+			disagreementOK := maxDisagreement >= 0 && maxDisagreement < disagreementThreshold
+			if varianceOK && disagreementOK {
+				converged = true
+				svc.logger.Infof("Base station calibration converged — disagreement=%.1fmm, variance=%.6f", maxDisagreement, maxVar)
+				break
 			}
 		}
 
+		if !converged {
+			svc.logger.Warnf("Convergence timeout: disagreement=%.1fmm, variance=%.6f. Try waving controllers where both base stations can see them.",
+				finalDisagreement, finalMaxVar)
+		}
+
+		result := map[string]interface{}{
+			"recalibrated":              true,
+			"base_stations_solved":      true,
+			"converged":                 converged,
+			"max_variance":              finalMaxVar,
+			"lighthouse_disagreement_mm": finalDisagreement,
+			"active_lighthouses":        survive.ActiveLighthouses(),
+		}
 		if converged {
-			svc.logger.Info("Recalibration complete — base stations converged. Use 'calibrate' or trackpad-up to set forward direction.")
+			svc.logger.Info("Recalibration complete. Use 'calibrate' or trackpad-up to set forward direction.")
 		} else {
-			svc.logger.Info("Recalibration complete — base stations solved but not fully converged. Use 'calibrate' or trackpad-up to set forward direction.")
+			svc.logger.Info("Recalibration complete (not fully converged). Use 'calibrate' or trackpad-up to set forward direction.")
 		}
-		return map[string]interface{}{
-			"recalibrated":         true,
-			"base_stations_solved": true,
-			"converged":            converged,
-			"max_variance":         maxVar,
-			"lighthouse_variances": lhVars,
-		}, nil
+		return result, nil
 	}
 
 	if taskCmd, ok := cmd["set_task"]; ok {
