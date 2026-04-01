@@ -1602,8 +1602,9 @@ func (h *teleopHand) controlFrame(ctx context.Context, cs ControllerState) {
 			defer cancel()
 			sendStart := time.Now()
 			if _, err := h.motionSvc.DoCommand(grpcCtx, map[string]interface{}{
-				"teleop_move": moveReq,
-				"seq":         seq,
+				"teleop_move":    moveReq,
+				"component_name": h.teleopComponentName(),
+				"seq":            seq,
 			}); err != nil {
 				grpcDur := time.Since(sendStart)
 				h.lastGrpcNanos.Store(grpcDur.Nanoseconds())
@@ -1685,7 +1686,8 @@ func (h *teleopHand) stopTeleop(ctx context.Context) {
 	}
 	if h.motionSvc != nil && h.teleopActive {
 		if _, err := h.motionSvc.DoCommand(ctx, map[string]interface{}{
-			"teleop_stop": true,
+			"teleop_stop":    true,
+			"component_name": h.teleopComponentName(),
 		}); err != nil {
 			h.svc.logger.Warnf("[%s] teleop_stop: %v", h.name, err)
 		} else {
