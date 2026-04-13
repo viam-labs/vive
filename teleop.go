@@ -43,6 +43,7 @@ type HandConfig struct {
 	Controller      string  `json:"controller"`
 	Arm             string  `json:"arm"`
 	Gripper         string  `json:"gripper,omitempty"`
+	GripperHz       int     `json:"gripper_hz,omitempty"`
 	Scale           float64 `json:"scale,omitempty"`
 	RotationEnabled *bool   `json:"rotation_enabled,omitempty"`
 	PosDeadzoneMM   float64 `json:"pos_deadzone_mm,omitempty"`
@@ -143,8 +144,8 @@ type teleopHand struct {
 	wasTrackpad bool
 
 	// gripper proportional control
-	gripperDesired atomic.Int64
-	gripperNotify  chan struct{}
+	gripperDesired  atomic.Int64
+	gripperInterval time.Duration
 
 	// control state
 	isControlling bool
@@ -306,6 +307,10 @@ func NewTeleopService(ctx context.Context, deps resource.Dependencies, name reso
 		if outlierRotDeg <= 0 {
 			outlierRotDeg = 30.0 // 30°/frame @ 90Hz ≈ 2700°/s
 		}
+		gripperHz := hc.GripperHz
+		if gripperHz <= 0 {
+			gripperHz = 30
+		}
 
 		h := &teleopHand{
 			name:            hc.Name,
@@ -320,7 +325,7 @@ func NewTeleopService(ctx context.Context, deps resource.Dependencies, name reso
 			absoluteRot:     true,
 			armFrameMat:     mgl64.Ident4(),
 			ctrlToArmOffset: mgl64.Ident4(),
-			gripperNotify:   make(chan struct{}, 1),
+			gripperInterval: time.Second / time.Duration(gripperHz),
 			posDeadzone:     posDeadzone,
 			rotDeadzone:     rotDeadzone,
 			smoothAlpha:     smoothAlpha,
@@ -328,8 +333,6 @@ func NewTeleopService(ctx context.Context, deps resource.Dependencies, name reso
 			outlierRotDeg:   outlierRotDeg,
 			svc:             svc,
 		}
-		h.gripperDesired.Store(830)
-
 		if h.gripper != nil {
 			go h.gripperLoop(cancelCtx)
 		}
@@ -1264,11 +1267,13 @@ func (h *teleopHand) teleopStatusLoop(ctx context.Context) {
 
 func (h *teleopHand) gripperLoop(ctx context.Context) {
 	lastSent := int64(-1)
+	ticker := time.NewTicker(h.gripperInterval)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-h.gripperNotify:
+		case <-ticker.C:
 		}
 		pos := h.gripperDesired.Load()
 		if pos == lastSent {
@@ -1290,10 +1295,6 @@ func (h *teleopHand) tick(ctx context.Context, cs ControllerState) {
 			pos = 10
 		}
 		h.gripperDesired.Store(int64(pos))
-		select {
-		case h.gripperNotify <- struct{}{}:
-		default:
-		}
 	}
 
 	if !cs.Connected {

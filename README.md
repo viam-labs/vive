@@ -88,7 +88,9 @@ Returns:
       // default: 3.0 — rotation dead-zone in degrees
       "rot_deadzone_deg": 3,
       // default: 0.05 — EMA smoothing alpha (0-1), lower = smoother
-      "smooth_alpha": 0.05
+      "smooth_alpha": 0.05,
+      // default: 30 — max rate (Hz) for sending gripper commands, throttles trigger input
+      "gripper_hz": 30
     },
     {
       "name": "right",
