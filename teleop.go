@@ -1267,9 +1267,6 @@ func (h *teleopHand) teleopStatusLoop(ctx context.Context) {
 
 func (h *teleopHand) gripperLoop(ctx context.Context) {
 	lastSent := int64(-1)
-	lastCandidate := int64(-1)
-	candidateSince := time.Now()
-	const stableThreshold = 100 * time.Millisecond
 	ticker := time.NewTicker(h.gripperInterval)
 	defer ticker.Stop()
 	for {
@@ -1280,17 +1277,6 @@ func (h *teleopHand) gripperLoop(ctx context.Context) {
 		}
 		pos := h.gripperDesired.Load()
 		if pos == lastSent {
-			lastCandidate = pos
-			continue
-		}
-		// Reset the stability timer when the desired position changes.
-		if pos != lastCandidate {
-			lastCandidate = pos
-			candidateSince = time.Now()
-			continue
-		}
-		// Wait until the desired position has been stable before sending.
-		if time.Since(candidateSince) < stableThreshold {
 			continue
 		}
 		lastSent = pos
