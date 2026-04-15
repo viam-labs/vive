@@ -11,6 +11,7 @@ import (
 	"time"
 
 	input "go.viam.com/rdk/components/input"
+	toggleswitch "go.viam.com/rdk/components/switch"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/resource"
 
@@ -28,8 +29,8 @@ func init() {
 // ButtonAction defines a configurable button action, following the streamdeck pattern.
 type ButtonAction struct {
 	Component string        `json:"component"` // resource short name
-	Method    string        `json:"method"`     // "do_command"
-	Args      []interface{} `json:"args"`       // Args[0] = DoCommand payload map
+	Method    string        `json:"method"`     // "do_command", "set_position", etc.
+	Args      []interface{} `json:"args"`       // method-specific arguments
 }
 
 type ControllerConfig struct {
@@ -56,9 +57,6 @@ func (cfg *ControllerConfig) Validate(path string) ([]string, []string, error) {
 	} {
 		if action == nil {
 			continue
-		}
-		if action.Method != "do_command" {
-			return nil, nil, fmt.Errorf("%s: unsupported method %q (only \"do_command\" is supported)", path, action.Method)
 		}
 		// Skip self-references to avoid dependency cycle.
 		if action.Component != ownName {
@@ -303,7 +301,7 @@ func (s *viveController) HasTrackpadUpAction() bool {
 	return s.cfg.TrackpadUpAction != nil
 }
 
-// executeAction resolves a button action's target component and calls DoCommand.
+// executeAction resolves a button action's target component and dispatches by method.
 func (s *viveController) executeAction(action *ButtonAction) {
 	if action == nil {
 		return
@@ -329,15 +327,38 @@ func (s *viveController) executeAction(action *ButtonAction) {
 			s.logger.Warnf("button action: component %q not found in dependencies", action.Component)
 			return
 		}
-		// Extract DoCommand payload from Args[0] (like streamdeck).
-		cmd := map[string]interface{}{}
-		if len(action.Args) > 0 {
-			if m, ok := action.Args[0].(map[string]interface{}); ok {
-				cmd = m
+
+		switch action.Method {
+		case "do_command":
+			cmd := map[string]interface{}{}
+			if len(action.Args) > 0 {
+				if m, ok := action.Args[0].(map[string]interface{}); ok {
+					cmd = m
+				}
 			}
-		}
-		if _, err := r.DoCommand(s.cancelCtx, cmd); err != nil {
-			s.logger.Warnf("button action DoCommand on %q failed: %v", action.Component, err)
+			if _, err := r.DoCommand(s.cancelCtx, cmd); err != nil {
+				s.logger.Warnf("button action DoCommand on %q failed: %v", action.Component, err)
+			}
+		case "set_position":
+			sw, ok := r.(toggleswitch.Switch)
+			if !ok {
+				s.logger.Warnf("button action: %q is not a switch component", action.Component)
+				return
+			}
+			if len(action.Args) == 0 {
+				s.logger.Warnf("button action: set_position on %q requires a position argument", action.Component)
+				return
+			}
+			pos, ok := action.Args[0].(float64)
+			if !ok {
+				s.logger.Warnf("button action: set_position arg must be a number, got %T", action.Args[0])
+				return
+			}
+			if err := sw.SetPosition(s.cancelCtx, uint32(pos), nil); err != nil {
+				s.logger.Warnf("button action SetPosition on %q failed: %v", action.Component, err)
+			}
+		default:
+			s.logger.Warnf("button action: unsupported method %q", action.Method)
 		}
 	}()
 }
