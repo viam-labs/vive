@@ -261,6 +261,9 @@ func NewTeleopService(ctx context.Context, deps resource.Dependencies, name reso
 		if !ok {
 			return nil, fmt.Errorf("controller %q is not a vive controller", hc.Controller)
 		}
+		// Inject teleop service into the controller's deps so button actions
+		// targeting this service can resolve it (avoids circular dep in graph).
+		vc.InjectDep(svc.name, svc)
 
 		a, err := arm.FromDependencies(deps, hc.Arm)
 		if err != nil {

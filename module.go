@@ -6,7 +6,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -44,26 +43,22 @@ type ControllerConfig struct {
 }
 
 func (cfg *ControllerConfig) Validate(path string) ([]string, []string, error) {
-	// Extract own short name from path (e.g. "rdk:component:input/vive-right" → "vive-right").
-	ownName := path
-	if idx := strings.LastIndex(path, "/"); idx >= 0 {
-		ownName = path[idx+1:]
-	}
-
 	var deps []string
+	seen := map[string]bool{}
 	for _, action := range []*ButtonAction{
 		cfg.MenuAction, cfg.TrackpadUpAction, cfg.TrackpadDownAction,
 		cfg.TrackpadLeftAction, cfg.TrackpadRightAction,
 	} {
-		if action == nil {
+		if action == nil || seen[action.Component] {
 			continue
 		}
-		// Skip self-references to avoid dependency cycle.
-		if action.Component != ownName {
-			deps = append(deps, action.Component)
-		}
+		seen[action.Component] = true
+		deps = append(deps, action.Component)
 	}
-	return deps, nil, nil
+	// Return deps as implicit_dependencies (second return value) to avoid
+	// circular dependency errors. Implicit deps are resolved if available
+	// but don't block construction if missing.
+	return nil, deps, nil
 }
 
 type viveController struct {
@@ -159,6 +154,13 @@ func (s *viveController) SetDeviceName(name string) {
 // SerialNumber returns the configured serial number for this controller.
 func (s *viveController) SerialNumber() string {
 	return s.cfg.SerialNumber
+}
+
+// InjectDep adds a resource to the controller's deps map for button action
+// resolution. Used by the teleop service to inject itself (avoiding a circular
+// dependency in the resource graph).
+func (s *viveController) InjectDep(name resource.Name, r resource.Resource) {
+	s.deps[name] = r
 }
 
 // UpdateState reads the current controller state from libsurvive and updates events.
