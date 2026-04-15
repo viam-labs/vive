@@ -41,7 +41,7 @@ reload-*/
 teleop_*.jsonl
 
 # Build artifact
-module
+/module
 
 # Local Claude commands
 .claude/commands/

@@ -30,6 +30,7 @@ typedef struct {
     float    mat[12];        // row-major 3×4 tracking matrix
     float    qw, qx, qy, qz; // raw quaternion from libsurvive (WXYZ)
     uint64_t pressed;        // bitmask: bit1=menu, bit2=grip, bit32=trackpad
+    int32_t  rawbtns;        // raw libsurvive button mask
     float    axis0x, axis0y; // trackpad position
     float    axis1x;         // trigger value (0–1)
 } VRControllerData;
@@ -151,6 +152,7 @@ static VRControllerData vr_get_controller_by_name(const char *name) {
     }
 
     int32_t buttons = survive_simple_object_get_button_mask(obj);
+    out.rawbtns = buttons;
     if (buttons & (1 << 6))  out.pressed |= (1ULL << 1);  // menu → bit 1
     if (buttons & (1 << 7))  out.pressed |= (1ULL << 2);  // grip → bit 2
     if (buttons & (1 << 1))  out.pressed |= (1ULL << 32); // trackpad → bit 32
@@ -275,6 +277,30 @@ const (
 	ButtonTrackpad uint64 = 1 << 32
 )
 
+// Raw libsurvive button bit positions (from enum SurviveButton).
+const (
+	RawButtonTrigger    int32 = 1 << 0
+	RawButtonTrackpad   int32 = 1 << 1
+	RawButtonThumbstick int32 = 1 << 2
+	RawButtonSystem     int32 = 1 << 3
+	RawButtonA          int32 = 1 << 4
+	RawButtonB          int32 = 1 << 5
+	RawButtonMenu       int32 = 1 << 6
+	RawButtonGrip       int32 = 1 << 7
+)
+
+// RawButtonNames maps each raw button bit to a human-readable name.
+var RawButtonNames = map[int32]string{
+	RawButtonTrigger:    "Trigger",
+	RawButtonTrackpad:   "Trackpad",
+	RawButtonThumbstick: "Thumbstick",
+	RawButtonSystem:     "System",
+	RawButtonA:          "A",
+	RawButtonB:          "B",
+	RawButtonMenu:       "Menu",
+	RawButtonGrip:       "Grip",
+}
+
 // ControllerData holds the state of a single tracked controller.
 type ControllerData struct {
 	StateValid bool
@@ -282,6 +308,7 @@ type ControllerData struct {
 	Mat        [12]float32 // row-major 3×4 tracking matrix
 	Quat       [4]float64  // raw quaternion from libsurvive [W, X, Y, Z]
 	Pressed    uint64      // button bitmask
+	RawButtons int32       // raw libsurvive button mask
 	Axis0X     float64     // trackpad X
 	Axis0Y     float64     // trackpad Y
 	Axis1X     float64     // trigger (0–1)
@@ -385,6 +412,7 @@ func GetController(name string) *ControllerData {
 		StateValid: true,
 		PoseValid:  data.poseValid != 0,
 		Pressed:    uint64(data.pressed),
+		RawButtons: int32(data.rawbtns),
 		Axis0X:     float64(data.axis0x),
 		Axis0Y:     float64(data.axis0y),
 		Axis1X:     float64(data.axis1x),

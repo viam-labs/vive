@@ -42,11 +42,12 @@ type viveController struct {
 	cancelCtx  context.Context
 	cancelFunc func()
 
-	mu         sync.RWMutex
-	deviceName string // resolved libsurvive object name (e.g. "WM0")
-	lastState  *ControllerState
-	lastEvents map[input.Control]input.Event
-	callbacks  map[input.Control]map[input.EventType][]input.ControlFunction
+	mu             sync.RWMutex
+	deviceName     string // resolved libsurvive object name (e.g. "WM0")
+	lastState      *ControllerState
+	lastRawButtons int32 // previous raw button mask for edge detection
+	lastEvents     map[input.Control]input.Event
+	callbacks      map[input.Control]map[input.EventType][]input.ControlFunction
 }
 
 // Available controls on a Vive Wand.
@@ -137,6 +138,20 @@ func (s *viveController) UpdateState() *ControllerState {
 		s.lastState = nil
 		return nil
 	}
+
+	// Log button transitions.
+	changed := data.RawButtons ^ s.lastRawButtons
+	for bit, name := range survive.RawButtonNames {
+		if changed&bit == 0 {
+			continue
+		}
+		if data.RawButtons&bit != 0 {
+			s.logger.Infof("%s: %s pressed", s.deviceName, name)
+		} else {
+			s.logger.Infof("%s: %s released", s.deviceName, name)
+		}
+	}
+	s.lastRawButtons = data.RawButtons
 
 	trigger := data.Axis1X
 	cs := &ControllerState{
