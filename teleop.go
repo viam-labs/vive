@@ -15,13 +15,11 @@ import (
 	"time"
 
 	"github.com/go-gl/mathgl/mgl64"
-	"github.com/golang/geo/r3"
 	"go.viam.com/rdk/components/arm"
 	"go.viam.com/rdk/components/gripper"
 	input "go.viam.com/rdk/components/input"
 	"go.viam.com/rdk/components/sensor"
 	"go.viam.com/rdk/logging"
-	"go.viam.com/rdk/referenceframe"
 	"go.viam.com/rdk/resource"
 	"go.viam.com/rdk/services/generic"
 	"go.viam.com/rdk/services/motion"
@@ -140,7 +138,6 @@ type teleopHand struct {
 
 	// button edge state
 	wasGrip     bool
-	wasMenu     bool
 	wasTrackpad bool
 
 	// gripper proportional control
@@ -153,7 +150,6 @@ type teleopHand struct {
 	errorTimeout  time.Time
 	lastCmdTime   time.Time
 	movePending   atomic.Bool
-	poseStack     []Pose
 
 	// session logging
 	logFile   *os.File
@@ -479,6 +475,27 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 			mode = "absolute"
 		}
 		return map[string]interface{}{"rotation_mode": mode}, nil
+	}
+
+	if adjustVal, ok := cmd["adjust_calibration"]; ok {
+		degrees, ok := adjustVal.(float64)
+		if !ok {
+			return nil, fmt.Errorf("adjust_calibration: expected number (degrees)")
+		}
+		svc.calibMu.RLock()
+		currentYaw := svc.calibYaw
+		calibrated := svc.calibSet
+		svc.calibMu.RUnlock()
+		if !calibrated {
+			return nil, fmt.Errorf("adjust_calibration: no calibration set yet")
+		}
+		newYaw := currentYaw + degrees*math.Pi/180.0
+		svc.saveCalib(newYaw)
+		return map[string]interface{}{
+			"adjusted":    true,
+			"old_yaw_deg": currentYaw * 180 / math.Pi,
+			"new_yaw_deg": newYaw * 180 / math.Pi,
+		}, nil
 	}
 
 	if _, ok := cmd["list_controllers"]; ok {
@@ -1301,11 +1318,11 @@ func (h *teleopHand) tick(ctx context.Context, cs ControllerState) {
 		return
 	}
 
-	// Trackpad rising edge: dispatch by region.
-	if cs.TrackpadPressed && !h.wasTrackpad {
+	// Trackpad up: internal calibrate (only if controller has no trackpad_up_action configured).
+	if cs.TrackpadPressed && !h.wasTrackpad && !h.controller.HasTrackpadUpAction() {
+		x := cs.Trackpad[0]
 		y := cs.Trackpad[1]
-		if y < -0.3 {
-			// Up: calibrate forward direction.
+		if math.Abs(y) >= math.Abs(x) && y < -0.3 {
 			h.svc.calibMu.RLock()
 			lht := h.svc.lhTransform
 			h.svc.calibMu.RUnlock()
@@ -1317,15 +1334,6 @@ func (h *teleopHand) tick(ctx context.Context, cs ControllerState) {
 				h.svc.saveCalib(yaw)
 				h.sendHaptic(0.3, 80)
 			}
-		} else if y > 0.3 {
-			// Down: toggle rotation control mode.
-			h.absoluteRot = !h.absoluteRot
-			mode := "relative"
-			if h.absoluteRot {
-				mode = "absolute"
-			}
-			h.svc.logger.Infof("[%s] rotation mode: %s", h.name, mode)
-			h.sendHaptic(0.3, 80)
 		}
 	}
 	h.wasTrackpad = cs.TrackpadPressed
@@ -1339,12 +1347,6 @@ func (h *teleopHand) tick(ctx context.Context, cs ControllerState) {
 		go h.stopTeleop(ctx)
 	}
 	h.wasGrip = cs.Grip
-
-	// Menu: return to saved pose.
-	if cs.Menu && !h.wasMenu && len(h.poseStack) > 0 {
-		go h.returnToPose(ctx)
-	}
-	h.wasMenu = cs.Menu
 
 	if h.isControlling {
 		h.controlFrame(ctx, cs)
@@ -1393,11 +1395,6 @@ func (h *teleopHand) startControl(ctx context.Context, cs ControllerState) {
 		ovRad.Theta = ovd.Theta * math.Pi / 180
 		rq := ovRad.Quaternion()
 		h.robotRefMat = mgl64.Quat{W: rq.Real, V: mgl64.Vec3{rq.Imag, rq.Jmag, rq.Kmag}}.Normalize().Mat4()
-
-		h.poseStack = append(h.poseStack, Pose{
-			X: pt.X, Y: pt.Y, Z: pt.Z,
-			OX: ovd.OX, OY: ovd.OY, OZ: ovd.OZ, ThetaDeg: ovd.Theta,
-		})
 
 		h.ctrlRefPos = cs.Pos
 
@@ -1709,38 +1706,3 @@ func (h *teleopHand) stopTeleop(ctx context.Context) {
 	}
 }
 
-func (h *teleopHand) returnToPose(ctx context.Context) {
-	if len(h.poseStack) == 0 {
-		return
-	}
-	saved := h.poseStack[len(h.poseStack)-1]
-	h.poseStack = h.poseStack[:len(h.poseStack)-1]
-	h.isControlling = false
-
-	h.stopTeleop(ctx)
-
-	componentName := h.gripperName
-	if componentName == "" {
-		componentName = h.armName
-	}
-	dest := referenceframe.NewPoseInFrame("world", spatialmath.NewPose(
-		r3.Vector{X: saved.X, Y: saved.Y, Z: saved.Z},
-		&spatialmath.OrientationVectorDegrees{OX: saved.OX, OY: saved.OY, OZ: saved.OZ, Theta: saved.ThetaDeg},
-	))
-	if h.motionSvc != nil {
-		if _, err := h.motionSvc.Move(ctx, motion.MoveReq{
-			ComponentName: componentName,
-			Destination:   dest,
-		}); err != nil {
-			h.svc.logger.Warnf("[%s] returnToPose motion.Move: %v", h.name, err)
-		}
-	} else {
-		p := spatialmath.NewPose(
-			r3.Vector{X: saved.X, Y: saved.Y, Z: saved.Z},
-			&spatialmath.OrientationVectorDegrees{OX: saved.OX, OY: saved.OY, OZ: saved.OZ, Theta: saved.ThetaDeg},
-		)
-		if err := h.arm.MoveToPosition(ctx, p, nil); err != nil {
-			h.svc.logger.Warnf("[%s] returnToPose: %v", h.name, err)
-		}
-	}
-}

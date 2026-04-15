@@ -3,8 +3,10 @@ package vive
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,13 +25,47 @@ func init() {
 	)
 }
 
+// ButtonAction defines a configurable button action, following the streamdeck pattern.
+type ButtonAction struct {
+	Component string        `json:"component"` // resource short name
+	Method    string        `json:"method"`     // "do_command"
+	Args      []interface{} `json:"args"`       // Args[0] = DoCommand payload map
+}
+
 type ControllerConfig struct {
-	SerialNumber string `json:"serial_number,omitempty"`
-	DeviceName   string `json:"device_name,omitempty"`
+	SerialNumber        string        `json:"serial_number,omitempty"`
+	DeviceName          string        `json:"device_name,omitempty"`
+	MenuAction          *ButtonAction `json:"menu_action,omitempty"`
+	TrackpadUpAction    *ButtonAction `json:"trackpad_up_action,omitempty"`
+	TrackpadDownAction  *ButtonAction `json:"trackpad_down_action,omitempty"`
+	TrackpadLeftAction  *ButtonAction `json:"trackpad_left_action,omitempty"`
+	TrackpadRightAction *ButtonAction `json:"trackpad_right_action,omitempty"`
 }
 
 func (cfg *ControllerConfig) Validate(path string) ([]string, []string, error) {
-	return nil, nil, nil
+	// Extract own short name from path (e.g. "rdk:component:input/vive-right" → "vive-right").
+	ownName := path
+	if idx := strings.LastIndex(path, "/"); idx >= 0 {
+		ownName = path[idx+1:]
+	}
+
+	var deps []string
+	for _, action := range []*ButtonAction{
+		cfg.MenuAction, cfg.TrackpadUpAction, cfg.TrackpadDownAction,
+		cfg.TrackpadLeftAction, cfg.TrackpadRightAction,
+	} {
+		if action == nil {
+			continue
+		}
+		if action.Method != "do_command" {
+			return nil, nil, fmt.Errorf("%s: unsupported method %q (only \"do_command\" is supported)", path, action.Method)
+		}
+		// Skip self-references to avoid dependency cycle.
+		if action.Component != ownName {
+			deps = append(deps, action.Component)
+		}
+	}
+	return deps, nil, nil
 }
 
 type viveController struct {
@@ -38,6 +74,7 @@ type viveController struct {
 	name   resource.Name
 	logger logging.Logger
 	cfg    *ControllerConfig
+	deps   resource.Dependencies
 
 	cancelCtx  context.Context
 	cancelFunc func()
@@ -46,6 +83,8 @@ type viveController struct {
 	deviceName     string // resolved libsurvive object name (e.g. "WM0")
 	lastState      *ControllerState
 	lastRawButtons int32 // previous raw button mask for edge detection
+	wasMenu        bool
+	wasTrackpad    bool
 	lastEvents     map[input.Control]input.Event
 	callbacks      map[input.Control]map[input.EventType][]input.ControlFunction
 }
@@ -90,6 +129,7 @@ func NewViveController(ctx context.Context, deps resource.Dependencies, name res
 		name:       name,
 		logger:     logger,
 		cfg:        conf,
+		deps:       deps,
 		cancelCtx:  cancelCtx,
 		cancelFunc: cancelFunc,
 		deviceName: conf.DeviceName,
@@ -180,6 +220,33 @@ func (s *viveController) UpdateState() *ControllerState {
 	s.updateButtonEvent(input.ButtonLT, cs.Grip, now)
 	s.updateButtonEvent(input.ButtonMenu, cs.Menu, now)
 
+	// Configurable button actions: edge detection and dispatch.
+	// Menu rising edge.
+	if cs.Menu && !s.wasMenu {
+		s.executeAction(s.cfg.MenuAction)
+	}
+	s.wasMenu = cs.Menu
+
+	// Trackpad rising edge: 4-way d-pad dispatch.
+	if cs.TrackpadPressed && !s.wasTrackpad {
+		x := cs.Trackpad[0]
+		y := cs.Trackpad[1]
+		if math.Abs(y) >= math.Abs(x) {
+			if y < -0.3 {
+				s.executeAction(s.cfg.TrackpadUpAction)
+			} else if y > 0.3 {
+				s.executeAction(s.cfg.TrackpadDownAction)
+			}
+		} else {
+			if x < -0.3 {
+				s.executeAction(s.cfg.TrackpadLeftAction)
+			} else if x > 0.3 {
+				s.executeAction(s.cfg.TrackpadRightAction)
+			}
+		}
+	}
+	s.wasTrackpad = cs.TrackpadPressed
+
 	s.lastState = cs
 	return cs
 }
@@ -228,6 +295,51 @@ func (s *viveController) fireCallbacks(ctrl input.Control, ev input.Event) {
 			}
 		}
 	}
+}
+
+// HasTrackpadUpAction returns true if a trackpad up action is configured.
+// The teleop service checks this to decide whether to run its internal calibrate.
+func (s *viveController) HasTrackpadUpAction() bool {
+	return s.cfg.TrackpadUpAction != nil
+}
+
+// executeAction resolves a button action's target component and calls DoCommand.
+func (s *viveController) executeAction(action *ButtonAction) {
+	if action == nil {
+		return
+	}
+	// Haptic feedback on button press.
+	if s.deviceName != "" {
+		survive.Haptic(s.deviceName, 0.3, 80.0/1000.0)
+	}
+	go func() {
+		// Resolve resource by short name (like streamdeck's getResourceAndCommandForKey).
+		var r resource.Resource
+		if action.Component == s.name.ShortName() {
+			r = s
+		} else {
+			for n, dep := range s.deps {
+				if n.ShortName() == action.Component {
+					r = dep
+					break
+				}
+			}
+		}
+		if r == nil {
+			s.logger.Warnf("button action: component %q not found in dependencies", action.Component)
+			return
+		}
+		// Extract DoCommand payload from Args[0] (like streamdeck).
+		cmd := map[string]interface{}{}
+		if len(action.Args) > 0 {
+			if m, ok := action.Args[0].(map[string]interface{}); ok {
+				cmd = m
+			}
+		}
+		if _, err := r.DoCommand(s.cancelCtx, cmd); err != nil {
+			s.logger.Warnf("button action DoCommand on %q failed: %v", action.Component, err)
+		}
+	}()
 }
 
 // Controls returns the list of controls provided by this controller.
