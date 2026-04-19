@@ -308,11 +308,11 @@ func (s *viveController) executeAction(action *ButtonAction) {
 	if action == nil {
 		return
 	}
-	// Haptic feedback on button press.
-	if s.deviceName != "" {
-		survive.Haptic(s.deviceName, 0.3, 80.0/1000.0)
-	}
 	go func() {
+		// Haptic feedback on button press (async to avoid blocking UpdateState).
+		if s.deviceName != "" {
+			survive.Haptic(s.deviceName, 0.3, 80.0/1000.0)
+		}
 		// Resolve resource by short name (like streamdeck's getResourceAndCommandForKey).
 		var r resource.Resource
 		if action.Component == s.name.ShortName() {
