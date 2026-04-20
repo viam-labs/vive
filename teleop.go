@@ -1055,9 +1055,21 @@ func (svc *teleopService) discoverAndAssignControllers() {
 
 	// Build serial→name lookup.
 	serialToName := map[string]string{}
+	nameExists := map[string]bool{}
 	for _, c := range controllers {
 		if c.serial != "" {
 			serialToName[c.serial] = c.name
+		}
+		nameExists[c.name] = true
+	}
+
+	// Validate existing assignments — clear any that point to objects
+	// no longer present in libsurvive (e.g. after restart or USB reconnect).
+	for _, h := range svc.hands {
+		dn := h.controller.DeviceName()
+		if dn != "" && !nameExists[dn] {
+			svc.logger.Warnf("[%s] device %q no longer exists, clearing assignment", h.name, dn)
+			h.controller.SetDeviceName("")
 		}
 	}
 
@@ -1245,12 +1257,10 @@ func (svc *teleopService) pollLoop(ctx context.Context, hz int) {
 						h.isControlling = false
 						go h.stopTeleop(ctx)
 					}
-					// Clear stale device name and force re-discovery if libsurvive is still running.
-					if survive.IsRunning() {
-						h.controller.SetDeviceName("")
-						svc.controllersAssigned = false
-						lastScan = time.Time{}
-					}
+					// Clear stale device name and force re-discovery.
+					h.controller.SetDeviceName("")
+					svc.controllersAssigned = false
+					lastScan = time.Time{}
 				}
 				continue
 			}

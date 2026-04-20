@@ -33,6 +33,7 @@ typedef struct {
     int32_t  rawbtns;        // raw libsurvive button mask
     float    axis0x, axis0y; // trackpad position
     float    axis1x;         // trigger value (0–1)
+    double   timecode;       // libsurvive pose timecode (monotonic)
 } VRControllerData;
 
 // quat_to_mat34 converts a SurvivePose (position + wxyz quaternion)
@@ -142,6 +143,7 @@ static VRControllerData vr_get_controller_by_name(const char *name) {
 
     SurvivePose pose;
     FLT timecode = survive_simple_object_get_latest_pose(obj, &pose);
+    out.timecode = (double)timecode;
     if (timecode > 0) {
         out.poseValid = 1;
         quat_to_mat34(&pose, out.mat);
