@@ -184,14 +184,21 @@ func (s *viveController) UpdateState() *ControllerState {
 		return nil
 	}
 
+	// When recovering from nil, reset staleness timer to give a fresh 2s window.
+	if s.wasNil {
+		s.lastTimecodeChange = time.Now()
+	}
+
 	// Detect stale controller: timecode only advances when new sensor data arrives.
 	if data.Timecode != s.lastTimecode {
 		s.lastTimecode = data.Timecode
 		s.lastTimecodeChange = time.Now()
 	} else if s.lastTimecode > 0 && !s.lastTimecodeChange.IsZero() && time.Since(s.lastTimecodeChange) > 2*time.Second {
-		// TODO: remove verbose logging after confirming reconnect fix works
-		s.logger.Warnf("%s: timecode stale for %.1fs (frozen at %.3f), treating as disconnected",
-			s.deviceName, time.Since(s.lastTimecodeChange).Seconds(), s.lastTimecode)
+		if !s.wasNil {
+			// TODO: remove verbose logging after confirming reconnect fix works
+			s.logger.Warnf("%s: timecode stale for %.1fs (frozen at %.3f), treating as disconnected",
+				s.deviceName, time.Since(s.lastTimecodeChange).Seconds(), s.lastTimecode)
+		}
 		s.wasNil = true
 		s.lastState = nil
 		return nil
