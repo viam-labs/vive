@@ -147,6 +147,7 @@ type teleopHand struct {
 
 	// controller health tracking
 	lastStateWasNil bool
+	staleCycles     int // consecutive stale→nil cycles without recovery
 
 	// gripper proportional control
 	gripperDesired atomic.Int64
@@ -1248,6 +1249,7 @@ func (svc *teleopService) pollLoop(ctx context.Context, hz int) {
 			if cs == nil {
 				if !h.lastStateWasNil {
 					h.lastStateWasNil = true
+					h.staleCycles++
 					devName := h.controller.DeviceName()
 					svc.logger.Warnf("[%s] controller %q stopped returning data (libsurvive running=%v)",
 						h.name, devName, survive.IsRunning())
@@ -1261,11 +1263,27 @@ func (svc *teleopService) pollLoop(ctx context.Context, hz int) {
 					h.controller.SetDeviceName("")
 					svc.controllersAssigned = false
 					lastScan = time.Time{}
+
+					// After 3 stale cycles without recovery, force libsurvive restart.
+					if h.staleCycles >= 3 && time.Since(svc.lastRestartAttempt) > 5*time.Second {
+						svc.logger.Warnf("[%s] controller stuck stale for %d cycles, forcing libsurvive restart", h.name, h.staleCycles)
+						svc.lastRestartAttempt = time.Now()
+						if err := survive.ForceRestart(svc.pluginPath); err != nil {
+							svc.logger.Errorf("libsurvive restart failed: %v", err)
+						} else {
+							svc.logger.Infof("libsurvive restarted successfully")
+							svc.lastLibsurviveRunning = true
+							svc.controllersAssigned = false
+							svc.frameChecked.Store(false)
+							h.staleCycles = 0
+						}
+					}
 				}
 				continue
 			}
 			if h.lastStateWasNil {
 				h.lastStateWasNil = false
+				h.staleCycles = 0
 				// TODO: remove verbose logging after confirming reconnect fix works
 				svc.logger.Infof("[%s] controller %q resumed (connected=%v)", h.name, h.controller.DeviceName(), cs.Connected)
 				// Snapshot current button state to prevent false edges on return.
