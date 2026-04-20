@@ -78,6 +78,7 @@ type viveController struct {
 	lastRawButtons int32 // previous raw button mask for edge detection
 	wasMenu        bool
 	wasTrackpad    bool
+	wasNil         bool // tracks nil→valid transitions for edge-state reset
 	lastEvents     map[input.Control]input.Event
 	callbacks      map[input.Control]map[input.EventType][]input.ControlFunction
 }
@@ -170,13 +171,23 @@ func (s *viveController) UpdateState() *ControllerState {
 	defer s.mu.Unlock()
 
 	if s.deviceName == "" {
+		s.wasNil = true
 		return nil
 	}
 
 	data := survive.GetController(s.deviceName)
 	if data == nil {
+		s.wasNil = true
 		s.lastState = nil
 		return nil
+	}
+
+	// Reset edge-detection state when returning from nil to prevent false button events.
+	if s.wasNil {
+		s.wasNil = false
+		s.wasMenu = false
+		s.wasTrackpad = false
+		s.lastRawButtons = data.RawButtons
 	}
 
 	// Log button transitions.

@@ -119,6 +119,12 @@ type teleopService struct {
 
 	// capture control sensor for data collection during teleop
 	captureSensor sensor.Sensor
+
+	// controller health monitoring
+	lastLibsurviveRunning bool      // tracks survive.IsRunning() transitions
+	pluginPath            string    // cached for auto-restart
+	lastRestartAttempt    time.Time // rate-limits restart attempts
+	restartAttempts       int       // consecutive restart failures
 }
 
 type teleopHand struct {
@@ -138,6 +144,9 @@ type teleopHand struct {
 	// button edge state
 	wasGrip     bool
 	wasTrackpad bool
+
+	// controller health tracking
+	lastStateWasNil bool
 
 	// gripper proportional control
 	gripperDesired atomic.Int64
@@ -222,14 +231,23 @@ func NewTeleopService(ctx context.Context, deps resource.Dependencies, name reso
 
 	cancelCtx, cancelFunc := context.WithCancel(context.Background())
 
+	// Compute plugin path for potential libsurvive auto-restart.
+	exePathForPlugin, _ := os.Executable()
+	pluginLib := filepath.Join(filepath.Dir(exePathForPlugin), "libsurvive", "lib", "libsurvive.so")
+	if _, statErr := os.Stat(pluginLib); statErr != nil {
+		pluginLib = filepath.Join(filepath.Dir(exePathForPlugin), "libsurvive", "lib", "libsurvive.dylib")
+	}
+
 	svc := &teleopService{
-		name:        name,
-		logger:      logger,
-		cfg:         conf,
-		cancelCtx:   cancelCtx,
-		cancelFunc:  cancelFunc,
-		calibDir:    calibDir,
-		lhTransform: BaseLighthouseTransform,
+		name:                  name,
+		logger:                logger,
+		cfg:                   conf,
+		cancelCtx:             cancelCtx,
+		cancelFunc:            cancelFunc,
+		calibDir:              calibDir,
+		lhTransform:           BaseLighthouseTransform,
+		lastLibsurviveRunning: true,
+		pluginPath:            pluginLib,
 	}
 
 	// Load calibration.
@@ -1187,10 +1205,61 @@ func (svc *teleopService) pollLoop(ctx context.Context, hz int) {
 
 		survive.PollEvents()
 
+		// Check libsurvive health (transition detection only — no per-frame cost).
+		if running := survive.IsRunning(); !running && svc.lastLibsurviveRunning {
+			svc.logger.Errorf("libsurvive stopped running -- all controllers unavailable")
+			svc.lastLibsurviveRunning = false
+		} else if running && !svc.lastLibsurviveRunning {
+			svc.logger.Infof("libsurvive is running again")
+			svc.lastLibsurviveRunning = true
+			svc.restartAttempts = 0
+		}
+
+		// Auto-restart libsurvive if it stopped (rate-limited, max 3 attempts).
+		if !svc.lastLibsurviveRunning && time.Since(svc.lastRestartAttempt) > 5*time.Second && svc.restartAttempts < 3 {
+			svc.restartAttempts++
+			svc.logger.Warnf("attempting libsurvive restart (%d/3)", svc.restartAttempts)
+			svc.lastRestartAttempt = time.Now()
+			if err := survive.ForceRestart(svc.pluginPath); err != nil {
+				svc.logger.Errorf("libsurvive restart failed: %v", err)
+			} else {
+				svc.logger.Infof("libsurvive restarted successfully")
+				svc.lastLibsurviveRunning = true
+				svc.controllersAssigned = false
+				svc.frameChecked.Store(false)
+				svc.restartAttempts = 0
+			}
+		}
+
 		for _, h := range svc.hands {
 			cs := h.controller.UpdateState()
 			if cs == nil {
+				if !h.lastStateWasNil {
+					h.lastStateWasNil = true
+					devName := h.controller.DeviceName()
+					svc.logger.Warnf("[%s] controller %q stopped returning data (libsurvive running=%v)",
+						h.name, devName, survive.IsRunning())
+					// Clean up teleop state if we were actively controlling.
+					if h.isControlling || h.teleopActive {
+						svc.logger.Warnf("[%s] controller lost while controlling -- stopping teleop", h.name)
+						h.isControlling = false
+						go h.stopTeleop(ctx)
+					}
+					// Clear stale device name and force re-discovery if libsurvive is still running.
+					if survive.IsRunning() {
+						h.controller.SetDeviceName("")
+						svc.controllersAssigned = false
+						lastScan = time.Time{}
+					}
+				}
 				continue
+			}
+			if h.lastStateWasNil {
+				h.lastStateWasNil = false
+				svc.logger.Infof("[%s] controller %q resumed", h.name, h.controller.DeviceName())
+				// Snapshot current button state to prevent false edges on return.
+				h.wasGrip = cs.Grip
+				h.wasTrackpad = cs.TrackpadPressed
 			}
 			if !h.firstDataLog {
 				h.firstDataLog = true
