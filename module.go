@@ -195,9 +195,10 @@ func (s *viveController) UpdateState() *ControllerState {
 		s.lastTimecodeChange = time.Now()
 	} else if s.lastTimecode > 0 && !s.lastTimecodeChange.IsZero() && time.Since(s.lastTimecodeChange) > 2*time.Second {
 		if !s.wasNil {
-			// TODO: remove verbose logging after confirming reconnect fix works
-			s.logger.Warnf("%s: timecode stale for %.1fs (frozen at %.3f), treating as disconnected",
-				s.deviceName, time.Since(s.lastTimecodeChange).Seconds(), s.lastTimecode)
+			// TODO: remove diagnostic logging after root-causing reconnect issue
+			s.logger.Warnf("%s: timecode stale for %.1fs (frozen at %.3f) — raw: poseValid=%v buttons=0x%x trigger=%.2f trackpad=(%.2f,%.2f)",
+				s.deviceName, time.Since(s.lastTimecodeChange).Seconds(), s.lastTimecode,
+				data.PoseValid, data.RawButtons, data.Axis1X, data.Axis0X, data.Axis0Y)
 		}
 		s.wasNil = true
 		s.lastState = nil

@@ -1263,21 +1263,6 @@ func (svc *teleopService) pollLoop(ctx context.Context, hz int) {
 					h.controller.SetDeviceName("")
 					svc.controllersAssigned = false
 					lastScan = time.Time{}
-
-					// After 3 stale cycles without recovery, force libsurvive restart.
-					if h.staleCycles >= 3 && time.Since(svc.lastRestartAttempt) > 5*time.Second {
-						svc.logger.Warnf("[%s] controller stuck stale for %d cycles, forcing libsurvive restart", h.name, h.staleCycles)
-						svc.lastRestartAttempt = time.Now()
-						if err := survive.ForceRestart(svc.pluginPath); err != nil {
-							svc.logger.Errorf("libsurvive restart failed: %v", err)
-						} else {
-							svc.logger.Infof("libsurvive restarted successfully")
-							svc.lastLibsurviveRunning = true
-							svc.controllersAssigned = false
-							svc.frameChecked.Store(false)
-							h.staleCycles = 0
-						}
-					}
 				}
 				continue
 			}
