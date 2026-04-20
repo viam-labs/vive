@@ -72,15 +72,17 @@ type viveController struct {
 	cancelCtx  context.Context
 	cancelFunc func()
 
-	mu             sync.RWMutex
-	deviceName     string // resolved libsurvive object name (e.g. "WM0")
-	lastState      *ControllerState
-	lastRawButtons int32 // previous raw button mask for edge detection
-	wasMenu        bool
-	wasTrackpad    bool
-	wasNil         bool // tracks nil→valid transitions for edge-state reset
-	lastEvents     map[input.Control]input.Event
-	callbacks      map[input.Control]map[input.EventType][]input.ControlFunction
+	mu                 sync.RWMutex
+	deviceName         string // resolved libsurvive object name (e.g. "WM0")
+	lastState          *ControllerState
+	lastRawButtons     int32 // previous raw button mask for edge detection
+	wasMenu            bool
+	wasTrackpad        bool
+	wasNil             bool // tracks nil→valid transitions for edge-state reset
+	lastTimecode       float64
+	lastTimecodeChange time.Time
+	lastEvents         map[input.Control]input.Event
+	callbacks          map[input.Control]map[input.EventType][]input.ControlFunction
 }
 
 // Available controls on a Vive Wand.
@@ -182,8 +184,23 @@ func (s *viveController) UpdateState() *ControllerState {
 		return nil
 	}
 
+	// Detect stale controller: timecode only advances when new sensor data arrives.
+	if data.Timecode != s.lastTimecode {
+		s.lastTimecode = data.Timecode
+		s.lastTimecodeChange = time.Now()
+	} else if s.lastTimecode > 0 && !s.lastTimecodeChange.IsZero() && time.Since(s.lastTimecodeChange) > 2*time.Second {
+		// TODO: remove verbose logging after confirming reconnect fix works
+		s.logger.Warnf("%s: timecode stale for %.1fs (frozen at %.3f), treating as disconnected",
+			s.deviceName, time.Since(s.lastTimecodeChange).Seconds(), s.lastTimecode)
+		s.wasNil = true
+		s.lastState = nil
+		return nil
+	}
+
 	// Reset edge-detection state when returning from nil to prevent false button events.
 	if s.wasNil {
+		// TODO: remove verbose logging after confirming reconnect fix works
+		s.logger.Infof("%s: data flowing again (timecode=%.3f)", s.deviceName, data.Timecode)
 		s.wasNil = false
 		s.wasMenu = false
 		s.wasTrackpad = false

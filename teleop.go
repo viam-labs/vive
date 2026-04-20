@@ -1266,7 +1266,8 @@ func (svc *teleopService) pollLoop(ctx context.Context, hz int) {
 			}
 			if h.lastStateWasNil {
 				h.lastStateWasNil = false
-				svc.logger.Infof("[%s] controller %q resumed", h.name, h.controller.DeviceName())
+				// TODO: remove verbose logging after confirming reconnect fix works
+				svc.logger.Infof("[%s] controller %q resumed (connected=%v)", h.name, h.controller.DeviceName(), cs.Connected)
 				// Snapshot current button state to prevent false edges on return.
 				h.wasGrip = cs.Grip
 				h.wasTrackpad = cs.TrackpadPressed

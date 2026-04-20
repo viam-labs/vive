@@ -307,6 +307,7 @@ var RawButtonNames = map[int32]string{
 type ControllerData struct {
 	StateValid bool
 	PoseValid  bool
+	Timecode   float64     // monotonic pose timestamp; freezes when no sensor data arrives
 	Mat        [12]float32 // row-major 3×4 tracking matrix
 	Quat       [4]float64  // raw quaternion from libsurvive [W, X, Y, Z]
 	Pressed    uint64      // button bitmask
@@ -413,6 +414,7 @@ func GetController(name string) *ControllerData {
 	cd := &ControllerData{
 		StateValid: true,
 		PoseValid:  data.poseValid != 0,
+		Timecode:   float64(data.timecode),
 		Pressed:    uint64(data.pressed),
 		RawButtons: int32(data.rawbtns),
 		Axis0X:     float64(data.axis0x),
