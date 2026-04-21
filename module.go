@@ -83,6 +83,15 @@ type viveController struct {
 	lastTimecodeChange time.Time
 	lastEvents         map[input.Control]input.Event
 	callbacks          map[input.Control]map[input.EventType][]input.ControlFunction
+
+	// Button-stale detection: tracks when any input (buttons or axes) last changed.
+	lastInputButtons int32
+	lastInputAxis0X  float64
+	lastInputAxis0Y  float64
+	lastInputAxis1X  float64
+	lastInputChange  time.Time
+	lastInputLog     time.Time // rate-limit diagnostic logging
+	inputEverChanged bool
 }
 
 // Available controls on a Vive Wand.
@@ -190,7 +199,8 @@ func (s *viveController) UpdateState() *ControllerState {
 	}
 
 	// Detect stale controller: timecode only advances when new sensor data arrives.
-	if data.Timecode != s.lastTimecode {
+	timecodeAdvancing := data.Timecode != s.lastTimecode
+	if timecodeAdvancing {
 		s.lastTimecode = data.Timecode
 		s.lastTimecodeChange = time.Now()
 	} else if s.lastTimecode > 0 && !s.lastTimecodeChange.IsZero() && time.Since(s.lastTimecodeChange) > 2*time.Second {
@@ -205,6 +215,28 @@ func (s *viveController) UpdateState() *ControllerState {
 		return nil
 	}
 
+	// Track input changes for button-stale detection.
+	inputChanged := data.RawButtons != s.lastInputButtons ||
+		data.Axis0X != s.lastInputAxis0X ||
+		data.Axis0Y != s.lastInputAxis0Y ||
+		data.Axis1X != s.lastInputAxis1X
+	if inputChanged {
+		s.lastInputButtons = data.RawButtons
+		s.lastInputAxis0X = data.Axis0X
+		s.lastInputAxis0Y = data.Axis0Y
+		s.lastInputAxis1X = data.Axis1X
+		s.lastInputChange = time.Now()
+		s.inputEverChanged = true
+	}
+	// Periodic diagnostic log (every 5s) to characterize input noise behavior.
+	// TODO: remove after confirming whether axes show noise at rest.
+	if s.inputEverChanged && !s.lastInputChange.IsZero() && time.Since(s.lastInputLog) > 5*time.Second {
+		s.lastInputLog = time.Now()
+		s.logger.Infof("%s: input health: last_change=%.1fs ago, buttons=0x%x, trigger=%.4f, trackpad=(%.4f,%.4f), timecode_advancing=%v",
+			s.deviceName, time.Since(s.lastInputChange).Seconds(),
+			data.RawButtons, data.Axis1X, data.Axis0X, data.Axis0Y, timecodeAdvancing)
+	}
+
 	// Reset edge-detection state when returning from nil to prevent false button events.
 	if s.wasNil {
 		// TODO: remove verbose logging after confirming reconnect fix works
@@ -213,6 +245,13 @@ func (s *viveController) UpdateState() *ControllerState {
 		s.wasMenu = false
 		s.wasTrackpad = false
 		s.lastRawButtons = data.RawButtons
+		// Reset input tracking for fresh baseline after recovery.
+		s.lastInputButtons = data.RawButtons
+		s.lastInputAxis0X = data.Axis0X
+		s.lastInputAxis0Y = data.Axis0Y
+		s.lastInputAxis1X = data.Axis1X
+		s.lastInputChange = time.Now()
+		s.inputEverChanged = false
 	}
 
 	// Log button transitions.
