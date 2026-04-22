@@ -1259,6 +1259,27 @@ func (svc *teleopService) pollLoop(ctx context.Context, hz int) {
 						h.isControlling = false
 						go h.stopTeleop(ctx)
 					}
+					// Button-stale requires ForceRestart — re-discovery alone won't fix it.
+					if h.controller.ButtonStale() {
+						svc.logger.Warnf("[%s] button-stale detected — triggering libsurvive ForceRestart", h.name)
+						if time.Since(svc.lastRestartAttempt) > 5*time.Second && svc.restartAttempts < 3 {
+							svc.restartAttempts++
+							svc.lastRestartAttempt = time.Now()
+							if err := survive.ForceRestart(svc.pluginPath); err != nil {
+								svc.logger.Errorf("libsurvive restart failed: %v", err)
+							} else {
+								svc.logger.Infof("libsurvive restarted (button-stale recovery)")
+								svc.lastLibsurviveRunning = true
+								svc.controllersAssigned = false
+								svc.frameChecked.Store(false)
+								svc.restartAttempts = 0
+								for _, hh := range svc.hands {
+									hh.staleCycles = 0
+									hh.firstDataLog = false
+								}
+							}
+						}
+					}
 					// Clear stale device name and force re-discovery.
 					h.controller.SetDeviceName("")
 					svc.controllersAssigned = false
