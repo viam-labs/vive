@@ -152,8 +152,11 @@ type teleopHand struct {
 	// gripper proportional control
 	gripperDesired atomic.Int64
 	gripperNotify  chan struct{}
+	gripperLatched bool  // trigger has caught up to the held position; tracking is live
+	gripperHeld    int64 // gripper position captured at enable; target until latched
 
 	// control state
+	enabled       atomic.Bool // master gate: when false, tick() is inert (handoff with autonomy)
 	isControlling bool
 	teleopActive  bool
 	errorTimeout  time.Time
@@ -476,11 +479,27 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 		for i, h := range svc.hands {
 			status[i] = map[string]interface{}{
 				"name":          h.name,
+				"enabled":       h.enabled.Load(),
 				"controlling":   h.isControlling,
 				"teleop_active": h.teleopActive,
 			}
 		}
 		return map[string]interface{}{"hands": status}, nil
+	}
+
+	if enVal, ok := cmd["enable"]; ok {
+		enable, ok := enVal.(bool)
+		if !ok {
+			return nil, fmt.Errorf("enable: expected bool, got %T", enVal)
+		}
+		for _, h := range svc.hands {
+			if enable {
+				h.enableControl(ctx)
+			} else {
+				h.disableControl(ctx)
+			}
+		}
+		return map[string]interface{}{"enabled": enable}, nil
 	}
 
 	if _, ok := cmd["toggle_rotation_mode"]; ok {
@@ -1403,17 +1422,104 @@ func (h *teleopHand) gripperLoop(ctx context.Context) {
 	}
 }
 
+// gripperLatchEps is how close (in gripper units, range 10..830) the trigger's
+// mapped position must get to the held position before live tracking engages.
+const gripperLatchEps = 20
+
+func absInt64(v int64) int64 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+// toInt64 coerces a DoCommand result value (typically float64 over the wire) to
+// int64. Returns 0 for unrecognized types.
+func toInt64(v interface{}) int64 {
+	switch n := v.(type) {
+	case float64:
+		return int64(n)
+	case float32:
+		return int64(n)
+	case int:
+		return int64(n)
+	case int32:
+		return int64(n)
+	case int64:
+		return n
+	default:
+		return 0
+	}
+}
+
+// enableControl starts teleop for this hand. It captures the gripper's current
+// position so trigger control engages without a snap, and resets edge state so
+// enabling never fires a spurious arm-control start. Call after autonomy pauses.
+func (h *teleopHand) enableControl(ctx context.Context) {
+	if h.gripper != nil {
+		// Default to fully-closed on read failure: assume the gripper may be
+		// holding a part, so engagement requires a deliberate full squeeze and
+		// can never auto-open and drop it.
+		held := int64(10)
+		if res, err := h.gripper.DoCommand(ctx, map[string]interface{}{"get": true}); err != nil {
+			h.svc.logger.Warnf("[%s] gripper get on enable failed: %v; assuming closed", h.name, err)
+		} else if v, ok := res["pos"]; ok {
+			held = toInt64(v)
+		} else {
+			h.svc.logger.Warnf("[%s] gripper get returned no \"pos\"; assuming closed", h.name)
+		}
+		h.gripperHeld = held
+		h.gripperDesired.Store(held)
+		h.gripperLatched = false
+	}
+	// Require a fresh grip press before arm control starts (no lurch on enable).
+	h.wasGrip = true
+	h.isControlling = false
+	h.enabled.Store(true) // publishes the writes above to tick()
+	h.svc.logger.Infof("[%s] teleop control enabled (gripper held at %d)", h.name, h.gripperHeld)
+}
+
+// disableControl stops teleop for this hand and synchronously ends any active
+// arm session, so the arm is fully released by the time this returns and
+// autonomy can resume without contention. The gripper freezes at its last
+// commanded position. Call before autonomy resumes.
+func (h *teleopHand) disableControl(ctx context.Context) {
+	h.enabled.Store(false) // tick() goes inert; future frames won't touch arm/gripper
+	h.isControlling = false
+	h.gripperLatched = false
+	h.stopTeleop(ctx) // synchronous: teleop_move session ended before we return
+	h.svc.logger.Infof("[%s] teleop control disabled", h.name)
+}
+
 func (h *teleopHand) tick(ctx context.Context, cs ControllerState) {
-	// Gripper: trigger → proportional position.
+	// Master gate: stay inert until the orchestrator enables control, so the
+	// service can sit alongside a paused autonomy module without touching the
+	// arm or gripper. (Ordering: enable writes its fields before Store(true),
+	// so an enabled.Load()==true here observes them.)
+	if !h.enabled.Load() {
+		return
+	}
+
+	// Gripper: trigger → proportional position, with catch-up on engage.
 	if h.gripper != nil {
 		pos := 830 - int(cs.Trigger*820)
 		if pos < 10 {
 			pos = 10
 		}
-		h.gripperDesired.Store(int64(pos))
-		select {
-		case h.gripperNotify <- struct{}{}:
-		default:
+		if !h.gripperLatched {
+			// Hold the position inherited from autonomy until the operator's
+			// trigger "meets" it, then take over with no discontinuity. This
+			// prevents snapping (e.g. flinging open) and dropping a held part.
+			if absInt64(int64(pos)-h.gripperHeld) <= gripperLatchEps {
+				h.gripperLatched = true
+			}
+		}
+		if h.gripperLatched {
+			h.gripperDesired.Store(int64(pos))
+			select {
+			case h.gripperNotify <- struct{}{}:
+			default:
+			}
 		}
 	}
 
