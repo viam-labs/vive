@@ -82,7 +82,7 @@ setup:
 ifeq ($(shell uname -s),Darwin)
 	brew install cmake libusb hidapi zlib
 else
-	sudo apt-get install -y cmake libusb-1.0-0-dev zlib1g-dev
+	sudo apt-get update && sudo apt-get install -y cmake libusb-1.0-0-dev zlib1g-dev
 endif
 	go mod tidy
 
