@@ -90,8 +90,8 @@ type viveController struct {
 	lastInputAxis0Y  float64
 	lastInputAxis1X  float64
 	lastInputChange  time.Time
+	lastInputLog     time.Time // rate-limit diagnostic logging
 	inputEverChanged bool
-	buttonStale      bool // true when input subsystem appears dead (pose live, buttons frozen)
 }
 
 // Available controls on a Vive Wand.
@@ -163,14 +163,6 @@ func (s *viveController) SetDeviceName(name string) {
 	s.deviceName = name
 }
 
-// ButtonStale returns true if the controller's input subsystem appears dead
-// (buttons/axes frozen while pose tracking continues).
-func (s *viveController) ButtonStale() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.buttonStale
-}
-
 // SerialNumber returns the configured serial number for this controller.
 func (s *viveController) SerialNumber() string {
 	return s.cfg.SerialNumber
@@ -236,19 +228,13 @@ func (s *viveController) UpdateState() *ControllerState {
 		s.lastInputChange = time.Now()
 		s.inputEverChanged = true
 	}
-	// Button-stale: input frozen while pose tracking is live.
-	if s.inputEverChanged && !s.lastInputChange.IsZero() &&
-		timecodeAdvancing &&
-		time.Since(s.lastInputChange) > 10*time.Second {
-		if !s.buttonStale {
-			s.logger.Warnf("%s: BUTTON STALE — input frozen %.1fs, timecode advancing (buttons=0x%x trigger=%.2f trackpad=(%.2f,%.2f))",
-				s.deviceName, time.Since(s.lastInputChange).Seconds(),
-				data.RawButtons, data.Axis1X, data.Axis0X, data.Axis0Y)
-			s.buttonStale = true
-		}
-		s.wasNil = true
-		s.lastState = nil
-		return nil
+	// Periodic diagnostic log (every 5s) to characterize input noise behavior.
+	// TODO: remove after confirming whether axes show noise at rest.
+	if s.inputEverChanged && !s.lastInputChange.IsZero() && time.Since(s.lastInputLog) > 5*time.Second {
+		s.lastInputLog = time.Now()
+		s.logger.Infof("%s: input health: last_change=%.1fs ago, buttons=0x%x, trigger=%.4f, trackpad=(%.4f,%.4f), timecode_advancing=%v",
+			s.deviceName, time.Since(s.lastInputChange).Seconds(),
+			data.RawButtons, data.Axis1X, data.Axis0X, data.Axis0Y, timecodeAdvancing)
 	}
 
 	// Reset edge-detection state when returning from nil to prevent false button events.
@@ -266,7 +252,6 @@ func (s *viveController) UpdateState() *ControllerState {
 		s.lastInputAxis1X = data.Axis1X
 		s.lastInputChange = time.Now()
 		s.inputEverChanged = false
-		s.buttonStale = false
 	}
 
 	// Log button transitions.
