@@ -176,19 +176,6 @@ Returns:
 {"calibrated": true, "yaw_deg": 175.9}
 ```
 
-**Enable / disable teleop control:**
-
-```json
-{"enable": true}
-```
-
-Master gate for all hands. Use this to hand control between an autonomous module (e.g. pick-and-place) and the operator. **Defaults to disabled** — until enabled, the service tracks controllers but never moves the arm or commands the gripper, so it can run alongside a paused autonomy module without contention.
-
-- **`{"enable": true}`** — call *after* pausing autonomy. Reads each gripper's current position (via `{"get": true}` → `{"pos": N}`) and holds it: the gripper does not move until the trigger "catches up" to that position, so takeover never snaps the gripper open or drops a held part. Arm control requires a fresh grip-button press (no lurch on enable). If the gripper position can't be read, it assumes closed and requires a full trigger squeeze to engage (never auto-opens).
-- **`{"enable": false}`** — call *before* resuming autonomy. Synchronously ends any active arm teleop session before returning, so the arm is fully released with no contention. The gripper freezes at its last commanded position.
-
-Returns `{"enabled": true}` or `{"enabled": false}`. Poll `{"status": true}` to confirm the state before resuming autonomy.
-
 **Get teleop status:**
 
 ```json
@@ -198,7 +185,7 @@ Returns `{"enabled": true}` or `{"enabled": false}`. Poll `{"status": true}` to 
 Returns:
 
 ```json
-{"hands": [{"name": "left", "enabled": false, "controlling": false, "teleop_active": false}]}
+{"hands": [{"name": "left", "controlling": false, "teleop_active": false}]}
 ```
 
 **Toggle rotation mode:**
