@@ -33,6 +33,11 @@ vr-teleop
 bin/
 *.tar.gz
 
+# Generated module entrypoint — must NOT be committed. If present in the source
+# checkout, Viam cloud build (CLI >= 0.130) detects it as a "pre-built module"
+# and skips `make`, publishing no package. The Makefile regenerates it.
+/run.sh
+
 # Viam reload files
 .VIAM_RELOAD_ARCHIVE.tar.gz
 reload-*/

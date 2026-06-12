@@ -38,6 +38,18 @@ $(LIBSURVIVE_LIB):
 $(MODULE_BINARY): $(LIBSURVIVE_LIB) Makefile go.mod *.go survive/*.go cmd/module/*.go
 	go build -o $(MODULE_BINARY) ./cmd/module
 
+# Generate the module entrypoint wrapper (sets the libsurvive library path).
+# Not committed: a tracked entrypoint makes Viam cloud build skip the build.
+run.sh:
+	@printf '%s\n' \
+		'#!/bin/sh' \
+		'# Wrapper to set library path for bundled libsurvive before launching the module binary.' \
+		'DIR="$$(cd "$$(dirname "$$0")" && pwd)"' \
+		'export LD_LIBRARY_PATH="$${DIR}/libsurvive/lib$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}"' \
+		'export DYLD_LIBRARY_PATH="$${DIR}/libsurvive/lib$${DYLD_LIBRARY_PATH:+:$$DYLD_LIBRARY_PATH}"' \
+		'exec "$${DIR}/bin/vive" "$$@"' > run.sh
+	@chmod +x run.sh
+
 # CLI binary (for remote development/testing)
 $(CLI_BINARY): $(LIBSURVIVE_LIB) Makefile go.mod *.go survive/*.go cmd/cli/*.go
 	go build -o $(CLI_BINARY) ./cmd/cli
