@@ -2,6 +2,7 @@ package vive
 
 import (
 	"math"
+	"sort"
 
 	"github.com/go-gl/mathgl/mgl64"
 	"go.viam.com/rdk/resource"
@@ -237,4 +238,50 @@ func ExceedsDeadzone(lastSent *Pose, newPose Pose, posMM, rotDeg float64) bool {
 	rotExceeds := rotDeg <= 0 || rotDist > rotDeg
 
 	return posExceeds || rotExceeds
+}
+
+// MedianFilter rejects impulse spikes from a scalar signal (e.g. the trigger
+// axis) via a fixed odd window; rejects impulses up to floor(window/2) samples.
+// A window <= 1 disables it.
+type MedianFilter struct {
+	window  int
+	samples []float64
+	idx     int
+	count   int
+}
+
+// NewMedianFilter returns a filter with the given window, forced odd and >= 1.
+func NewMedianFilter(window int) *MedianFilter {
+	if window < 1 {
+		window = 1
+	}
+	if window%2 == 0 {
+		window++
+	}
+	return &MedianFilter{window: window, samples: make([]float64, window)}
+}
+
+// Push adds a sample and returns the median of the current window.
+func (f *MedianFilter) Push(v float64) float64 {
+	if f == nil || f.window <= 1 {
+		return v
+	}
+	f.samples[f.idx] = v
+	f.idx = (f.idx + 1) % f.window
+	if f.count < f.window {
+		f.count++
+	}
+	buf := make([]float64, f.count)
+	copy(buf, f.samples[:f.count])
+	sort.Float64s(buf)
+	return buf[f.count/2]
+}
+
+// Reset clears the filter's history (e.g. on controller reconnect).
+func (f *MedianFilter) Reset() {
+	if f == nil {
+		return
+	}
+	f.idx = 0
+	f.count = 0
 }

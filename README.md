@@ -15,7 +15,9 @@ HTC Vive VR controller tracking and arm teleop for Viam robots. Uses [libsurvive
   // optional — if omitted, controllers are assigned in discovery order
   "serial_number": "LHR-FEC592B1",
   // optional — typically auto-discovered (e.g. "WM0")
-  "device_name": ""
+  "device_name": "",
+  // optional — median-filter window on the trigger axis to reject libsurvive spikes (odd; <=1 disables; default 5)
+  "trigger_median_window": 5
 }
 ```
 

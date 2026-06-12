@@ -40,7 +40,12 @@ type ControllerConfig struct {
 	TrackpadDownAction  *ButtonAction `json:"trackpad_down_action,omitempty"`
 	TrackpadLeftAction  *ButtonAction `json:"trackpad_left_action,omitempty"`
 	TrackpadRightAction *ButtonAction `json:"trackpad_right_action,omitempty"`
+	// TriggerMedianWindow: median-filter window on the trigger axis to reject
+	// libsurvive spikes. Odd; <= 1 disables; default 5.
+	TriggerMedianWindow int `json:"trigger_median_window,omitempty"`
 }
+
+const defaultTriggerMedianWindow = 5
 
 func (cfg *ControllerConfig) Validate(path string) ([]string, []string, error) {
 	var deps []string
@@ -92,6 +97,8 @@ type viveController struct {
 	lastInputChange  time.Time
 	lastInputLog     time.Time // rate-limit diagnostic logging
 	inputEverChanged bool
+
+	triggerFilter *MedianFilter // guarded by mu
 }
 
 // Available controls on a Vive Wand.
@@ -130,16 +137,22 @@ func NewViveController(ctx context.Context, deps resource.Dependencies, name res
 
 	cancelCtx, cancelFunc := context.WithCancel(context.Background())
 
+	triggerWindow := conf.TriggerMedianWindow
+	if triggerWindow == 0 {
+		triggerWindow = defaultTriggerMedianWindow
+	}
+
 	s := &viveController{
-		name:       name,
-		logger:     logger,
-		cfg:        conf,
-		deps:       deps,
-		cancelCtx:  cancelCtx,
-		cancelFunc: cancelFunc,
-		deviceName: conf.DeviceName,
-		lastEvents: make(map[input.Control]input.Event),
-		callbacks:  make(map[input.Control]map[input.EventType][]input.ControlFunction),
+		name:          name,
+		logger:        logger,
+		cfg:           conf,
+		deps:          deps,
+		cancelCtx:     cancelCtx,
+		cancelFunc:    cancelFunc,
+		deviceName:    conf.DeviceName,
+		lastEvents:    make(map[input.Control]input.Event),
+		callbacks:     make(map[input.Control]map[input.EventType][]input.ControlFunction),
+		triggerFilter: NewMedianFilter(triggerWindow),
 	}
 
 	return s, nil
@@ -252,6 +265,7 @@ func (s *viveController) UpdateState() *ControllerState {
 		s.lastInputAxis1X = data.Axis1X
 		s.lastInputChange = time.Now()
 		s.inputEverChanged = false
+		s.triggerFilter.Reset()
 	}
 
 	// Log button transitions.
@@ -268,7 +282,9 @@ func (s *viveController) UpdateState() *ControllerState {
 	}
 	s.lastRawButtons = data.RawButtons
 
-	trigger := data.Axis1X
+	// Median-filter the trigger to drop libsurvive impulse spikes; raw Axis1X is
+	// still used above for staleness diagnostics.
+	trigger := s.triggerFilter.Push(data.Axis1X)
 	cs := &ControllerState{
 		Connected:       data.PoseValid,
 		Trigger:         trigger,

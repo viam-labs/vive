@@ -152,6 +152,8 @@ type teleopHand struct {
 	// gripper proportional control
 	gripperDesired atomic.Int64
 	gripperNotify  chan struct{}
+	lastGripperPos int
+	gripperPosInit bool
 
 	// control state
 	isControlling bool
@@ -1389,6 +1391,16 @@ func (h *teleopHand) tick(ctx context.Context, cs ControllerState) {
 		if pos < 10 {
 			pos = 10
 		}
+		// Warn on large single-tick jumps — usually a trigger spike past the filter.
+		jump := pos - h.lastGripperPos
+		if jump < 0 {
+			jump = -jump
+		}
+		if h.gripperPosInit && jump > 400 {
+			h.svc.logger.Warnf("[%s] large gripper jump: %d->%d (trigger=%.3f)", h.name, h.lastGripperPos, pos, cs.Trigger)
+		}
+		h.lastGripperPos = pos
+		h.gripperPosInit = true
 		h.gripperDesired.Store(int64(pos))
 		select {
 		case h.gripperNotify <- struct{}{}:
