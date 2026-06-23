@@ -86,6 +86,7 @@ type captureControl struct {
 	task          string
 	sessionTags   []string
 	sessionStart  time.Time
+	activeGrips   int
 }
 
 func newCaptureControl(ctx context.Context, deps resource.Dependencies, rawConf resource.Config, logger logging.Logger) (sensor.Sensor, error) {
@@ -148,23 +149,40 @@ func (cc *captureControl) DoCommand(ctx context.Context, cmd map[string]interfac
 		cc.mu.Lock()
 		defer cc.mu.Unlock()
 
-		cc.capturing = true
-		cc.sessionStart = time.Now()
-		sessionTag := fmt.Sprintf("session:%s", cc.sessionStart.Format("20060102_150405"))
-		cc.sessionTags = []string{sessionTag}
-		if cc.task != "" {
-			cc.sessionTags = append(cc.sessionTags, fmt.Sprintf("cmd:%s", cc.task))
+		cc.activeGrips++
+		if cc.activeGrips == 1 {
+			cc.capturing = true
+			cc.sessionStart = time.Now()
+			sessionTag := fmt.Sprintf("session:%s", cc.sessionStart.Format("20060102_150405"))
+			cc.sessionTags = []string{sessionTag}
+			if cc.task != "" {
+				cc.sessionTags = append(cc.sessionTags, fmt.Sprintf("cmd:%s", cc.task))
+			}
+			cc.logger.Infof("capture started: tags=%v freq=%.1fHz", cc.sessionTags, cc.captureFreqHz)
 		}
 
-		cc.logger.Infof("capture started: tags=%v freq=%.1fHz", cc.sessionTags, cc.captureFreqHz)
 		return map[string]interface{}{
-			"capturing": true,
-			"tags":      cc.sessionTags,
+			"capturing":    true,
+			"active_grips": cc.activeGrips,
+			"tags":         cc.sessionTags,
 		}, nil
 	}
 
 	if _, ok := cmd["stop-capture"]; ok {
 		cc.mu.Lock()
+		if cc.activeGrips > 0 {
+			cc.activeGrips--
+		}
+		// Another hand is still driving — keep the session open.
+		if cc.activeGrips > 0 {
+			grips := cc.activeGrips
+			cc.mu.Unlock()
+			return map[string]interface{}{
+				"capturing":    true,
+				"active_grips": grips,
+			}, nil
+		}
+
 		cc.capturing = false
 		start := cc.sessionStart
 		tags := cc.sessionTags
@@ -180,7 +198,8 @@ func (cc *captureControl) DoCommand(ctx context.Context, cmd map[string]interfac
 		}
 
 		return map[string]interface{}{
-			"capturing": false,
+			"capturing":    false,
+			"active_grips": 0,
 		}, nil
 	}
 
@@ -203,6 +222,7 @@ func (cc *captureControl) DoCommand(ctx context.Context, cmd map[string]interfac
 		return map[string]interface{}{
 			"capturing":            cc.capturing,
 			"capture_frequency_hz": cc.captureFreqHz,
+			"active_grips":         cc.activeGrips,
 			"tags":                 cc.sessionTags,
 			"task":                 cc.task,
 		}, nil
