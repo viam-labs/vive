@@ -84,12 +84,14 @@ func (cc *captureControl) Readings(ctx context.Context, extra map[string]interfa
 
 	var overrides []interface{}
 
-	overrides = append(overrides, map[string]interface{}{
-		"resource_name":        cc.cfg.ArmName,
-		"method":               "EndPosition",
-		"capture_frequency_hz": freq,
-		"tags":                 tags,
-	})
+	for _, method := range []string{"EndPosition", "JointPositions"} {
+		overrides = append(overrides, map[string]interface{}{
+			"resource_name":        cc.cfg.ArmName,
+			"method":               method,
+			"capture_frequency_hz": freq,
+			"tags":                 tags,
+		})
+	}
 
 	for _, camName := range cc.cfg.CameraNames {
 		overrides = append(overrides, map[string]interface{}{
