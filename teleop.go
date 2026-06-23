@@ -368,6 +368,10 @@ func (svc *teleopService) Name() resource.Name {
 	return svc.name
 }
 
+func (svc *teleopService) Status(ctx context.Context) (map[string]interface{}, error) {
+	return map[string]interface{}{}, nil
+}
+
 func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
 	if _, ok := cmd["calibrate"]; ok {
 		// Use the first hand's controller for calibration.

@@ -1,0 +1,1426 @@
+{
+  "agent": {
+    "version_control": {
+      "viam-server": "https://storage.googleapis.com/packages.viam.com/apps/viam-server/viam-server-pr-5898-x86_64"
+    }
+  },
+  "components": [
+    {
+      "name": "webcam",
+      "api": "rdk:component:camera",
+      "model": "rdk:builtin:webcam",
+      "attributes": {
+        "height_px": 1080,
+        "video_path": "video0",
+        "width_px": 1920,
+        "format": "MJPEG",
+        "frame_rate": 30
+      },
+      "disabled": true,
+      "ui_folder": {
+        "name": "hardware"
+      }
+    },
+    {
+      "name": "arm-right-reset",
+      "api": "rdk:component:switch",
+      "model": "erh:vmodutils:arm-position-saver",
+      "attributes": {
+        "joints": [
+          0.6980611085891724,
+          -1.022413969039917,
+          -0.9166246652603149,
+          0.017481273040175434,
+          1.4714407920837402,
+          0.15380893647670746
+        ],
+        "arm": "right-arm",
+        "motion": ""
+      },
+      "ui_folder": {
+        "name": "poses"
+      }
+    },
+    {
+      "name": "arm-left-reset",
+      "api": "rdk:component:switch",
+      "model": "erh:vmodutils:arm-position-saver",
+      "attributes": {
+        "vision_services": [],
+        "constraints": {},
+        "extra": {},
+        "joints": [
+          -0.9658231139183044,
+          -0.9842431545257568,
+          -0.867932915687561,
+          0.01253807544708252,
+          1.3069071769714358,
+          -0.24214869737625122
+        ],
+        "arm": "left-arm",
+        "motion": ""
+      },
+      "ui_folder": {
+        "name": "poses"
+      }
+    },
+    {
+      "name": "left-vive",
+      "api": "rdk:component:input_controller",
+      "model": "viam:vive:vive-controller",
+      "attributes": {
+        "trackpad_right_action": {
+          "args": [
+            {
+              "adjust_calibration": 5
+            }
+          ],
+          "component": "teleop-service",
+          "method": "do_command"
+        },
+        "serial_number": "LHR-FEC592B1",
+        "menu_action": {
+          "method": "set_position",
+          "args": [
+            2
+          ],
+          "component": "arm-left-reset"
+        },
+        "trackpad_down_action": {
+          "component": "teleop-service",
+          "method": "do_command",
+          "args": [
+            {
+              "toggle_rotation_mode": true
+            }
+          ]
+        },
+        "trackpad_left_action": {
+          "component": "teleop-service",
+          "method": "do_command",
+          "args": [
+            {
+              "adjust_calibration": -5
+            }
+          ]
+        }
+      },
+      "ui_folder": {
+        "name": "teleop"
+      }
+    },
+    {
+      "name": "right-vive",
+      "api": "rdk:component:input_controller",
+      "model": "viam:vive:vive-controller",
+      "attributes": {
+        "serial_number": "LHR-DC3CF023",
+        "menu_action": {
+          "args": [
+            2
+          ],
+          "component": "arm-right-reset",
+          "method": "set_position"
+        },
+        "trackpad_down_action": {
+          "args": [
+            {
+              "toggle_rotation_mode": true
+            }
+          ],
+          "component": "teleop-service",
+          "method": "do_command"
+        },
+        "trackpad_left_action": {
+          "method": "do_command",
+          "args": [
+            {
+              "adjust_calibration": -5
+            }
+          ],
+          "component": "teleop-service"
+        },
+        "trackpad_right_action": {
+          "args": [
+            {
+              "adjust_calibration": 5
+            }
+          ],
+          "component": "teleop-service",
+          "method": "do_command"
+        }
+      },
+      "ui_folder": {
+        "name": "teleop"
+      }
+    },
+    {
+      "name": "capture-control",
+      "api": "rdk:component:sensor",
+      "model": "viam:vive:capture-control",
+      "attributes": {
+        "arm_names": ["left-arm", "right-arm"],
+        "camera_names": ["left-cam", "right-cam"],
+        "gripper_names": ["left-gripper", "right-gripper"],
+        "capture_frequency_hz": 10.0
+      },
+      "ui_folder": {
+        "name": "teleop"
+      }
+    },
+    {
+      "name": "arm-left-1",
+      "api": "rdk:component:switch",
+      "model": "erh:vmodutils:arm-position-saver",
+      "attributes": {
+        "extra": {},
+        "joints": [
+          -0.7807140946388245,
+          -0.08903682231903076,
+          -1.2244552373886108,
+          0.21632379293441772,
+          1.130694389343262,
+          -0.8687878251075745
+        ],
+        "arm": "left-arm",
+        "motion": "",
+        "vision_services": [],
+        "constraints": {}
+      },
+      "ui_folder": {
+        "name": "poses"
+      }
+    },
+    {
+      "name": "arm-left-2",
+      "api": "rdk:component:switch",
+      "model": "erh:vmodutils:arm-position-saver",
+      "attributes": {
+        "arm": "left-arm",
+        "motion": "",
+        "vision_services": [],
+        "constraints": {},
+        "extra": {},
+        "joints": [
+          -0.737799882888794,
+          0.31981906294822693,
+          -0.9270354509353638,
+          0.20477114617824554,
+          0.6120784282684325,
+          -0.9097011685371399
+        ]
+      },
+      "ui_folder": {
+        "name": "poses"
+      }
+    },
+    {
+      "name": "arm-left-3",
+      "api": "rdk:component:switch",
+      "model": "erh:vmodutils:arm-position-saver",
+      "attributes": {
+        "arm": "left-arm",
+        "motion": "",
+        "vision_services": [],
+        "constraints": {},
+        "extra": {},
+        "joints": [
+          -0.5703059434890748,
+          -0.3567405343055725,
+          -0.6932795643806458,
+          0.33888670802116394,
+          0.8098970055580139,
+          -0.9176694750785828
+        ]
+      },
+      "ui_folder": {
+        "name": "poses"
+      }
+    },
+    {
+      "name": "arm-left-4",
+      "api": "rdk:component:switch",
+      "model": "erh:vmodutils:arm-position-saver",
+      "attributes": {
+        "extra": {},
+        "joints": [
+          -0.495755136013031,
+          0.08919790387153625,
+          -0.6041561365127565,
+          0.02866404503583908,
+          0.4755277633666992,
+          -0.6484922170639039
+        ],
+        "arm": "left-arm",
+        "motion": "",
+        "vision_services": [],
+        "constraints": {}
+      },
+      "ui_folder": {
+        "name": "poses"
+      }
+    },
+    {
+      "name": "right-start-pose",
+      "api": "rdk:component:switch",
+      "model": "erh:vmodutils:arm-position-saver",
+      "attributes": {
+        "point": {
+          "X": 50,
+          "Y": 310,
+          "Z": 600
+        },
+        "orientation": {
+          "x": 0,
+          "y": 0,
+          "z": -1,
+          "th": 0
+        },
+        "arm": "right-arm",
+        "motion": "builtin",
+        "vision_services": [],
+        "constraints": {
+          "linear_constraints": [],
+          "pseudolinear_constraints": [],
+          "orientation_constraints": [],
+          "collision_specifications": []
+        },
+        "extra": {}
+      },
+      "ui_folder": {
+        "name": "sorting-demo"
+      }
+    },
+    {
+      "name": "left-start-pose",
+      "api": "rdk:component:switch",
+      "model": "erh:vmodutils:arm-position-saver",
+      "attributes": {
+        "orientation": {
+          "y": 0,
+          "z": -1,
+          "th": 0,
+          "x": 0
+        },
+        "arm": "left-arm",
+        "motion": "builtin",
+        "vision_services": [],
+        "constraints": {
+          "pseudolinear_constraints": [],
+          "orientation_constraints": [],
+          "collision_specifications": [],
+          "linear_constraints": []
+        },
+        "extra": {},
+        "point": {
+          "X": 50,
+          "Y": 700,
+          "Z": 600
+        }
+      },
+      "ui_folder": {
+        "name": "sorting-demo"
+      }
+    },
+    {
+      "name": "chessboard-poses-right",
+      "api": "rdk:component:pose_tracker",
+      "model": "viam:opencv:chessboard",
+      "attributes": {
+        "pattern_size": [
+          13,
+          8
+        ],
+        "square_size_mm": 20,
+        "camera_intrinsics": {
+          "K": {
+            "cx": 640,
+            "cy": 360,
+            "fx": 922.972,
+            "fy": 922.972
+          },
+          "dist": {
+            "p2": 0,
+            "k1": 0,
+            "k2": 0,
+            "k3": 0,
+            "p1": 0
+          }
+        },
+        "camera_name": "right-cam"
+      },
+      "disabled": true,
+      "ui_folder": {
+        "name": "z camera calibration"
+      }
+    },
+    {
+      "name": "chessboard-poses-left",
+      "api": "rdk:component:pose_tracker",
+      "model": "viam:opencv:chessboard",
+      "attributes": {
+        "camera_name": "left-cam",
+        "pattern_size": [
+          13,
+          8
+        ],
+        "square_size_mm": 20,
+        "camera_intrinsics": {
+          "K": {
+            "fy": 922.972,
+            "cx": 640,
+            "cy": 360,
+            "fx": 922.972
+          },
+          "dist": {
+            "p1": 0,
+            "p2": 0,
+            "k1": 0,
+            "k2": 0,
+            "k3": 0
+          }
+        }
+      },
+      "disabled": true,
+      "ui_folder": {
+        "name": "z camera calibration"
+      }
+    }
+  ],
+  "services": [
+    {
+      "name": "segment-detections-left",
+      "api": "rdk:service:vision",
+      "model": "viam:vision:detections-to-segments",
+      "attributes": {
+        "sigma": 1.25,
+        "ui_folder": {
+          "name": "vision"
+        },
+        "camera_name": "left-cam",
+        "confidence_threshold_pct": 0.5,
+        "detector_name": "detect-cubes",
+        "mean_k": 5
+      },
+      "ui_folder": {
+        "name": "sorting-demo"
+      }
+    },
+    {
+      "name": "cube-finder-model",
+      "api": "rdk:service:mlmodel",
+      "model": "viam:mlmodel-tflite:tflite_cpu",
+      "attributes": {
+        "model_path": "${packages.ml_model.cube-finder-teleopdemo}/cube-finder-teleopdemo.tflite",
+        "label_path": "${packages.ml_model.cube-finder-teleopdemo}/labels.txt",
+        "package_reference": "e76d1b3b-0468-4efd-bb7f-fb1d2b352fcb/cube-finder-teleopdemo"
+      },
+      "ui_folder": {
+        "name": "sorting-demo"
+      }
+    },
+    {
+      "name": "sorter-service",
+      "api": "rdk:service:generic",
+      "model": "clint:cube-sorter:cube-sorter",
+      "attributes": {
+        "arms": [
+          {
+            "margin": 50,
+            "camera_name": "left-cam",
+            "zones": [
+              {
+                "inspect_x_offset": -100,
+                "label": "green block",
+                "origin": [
+                  540,
+                  950,
+                  75
+                ],
+                "width": 300,
+                "depth": 200
+              },
+              {
+                "width": 300,
+                "depth": 300,
+                "label": "orange block",
+                "inspect_x_offset": -100,
+                "origin": [
+                  540,
+                  900,
+                  75
+                ]
+              }
+            ],
+            "return_area": {
+              "width": 200,
+              "depth": 350,
+              "origin": [
+                250,
+                800,
+                75
+              ]
+            },
+            "cube_height": 30,
+            "grasp_z_offset": 50,
+            "approach_yaw": 0,
+            "arm_name": "left-arm",
+            "block_size": 30,
+            "start_pose": "left-start-pose",
+            "segmenter_name": "segment-detections-left",
+            "gripper_name": "left-gripper"
+          },
+          {
+            "segmenter_name": "segment-detections-right",
+            "grasp_z_offset": 50,
+            "arm_name": "right-arm",
+            "approach_yaw": 0,
+            "cube_height": 30,
+            "zones": [
+              {
+                "depth": 300,
+                "label": "black block",
+                "inspect_x_offset": -100,
+                "origin": [
+                  540,
+                  120,
+                  75
+                ],
+                "width": 300
+              },
+              {
+                "depth": 300,
+                "label": "blue block",
+                "inspect_x_offset": -100,
+                "origin": [
+                  540,
+                  220,
+                  75
+                ],
+                "width": 300
+              }
+            ],
+            "block_size": 30,
+            "margin": 50,
+            "camera_name": "right-cam",
+            "return_area": {
+              "width": 200,
+              "depth": 350,
+              "origin": [
+                250,
+                220,
+                75
+              ]
+            },
+            "gripper_name": "right-gripper",
+            "start_pose": "right-start-pose"
+          }
+        ],
+        "motion_service": "builtin"
+      },
+      "ui_folder": {
+        "name": "sorting-demo"
+      }
+    },
+    {
+      "name": "segment-detections-right",
+      "api": "rdk:service:vision",
+      "model": "viam:vision:detections-to-segments",
+      "attributes": {
+        "ui_folder": {
+          "name": "vision"
+        },
+        "camera_name": "right-cam",
+        "confidence_threshold_pct": 0.5,
+        "detector_name": "detect-cubes",
+        "mean_k": 5,
+        "sigma": 1.25
+      },
+      "ui_folder": {
+        "name": "sorting-demo"
+      }
+    },
+    {
+      "name": "detect-cubes",
+      "api": "rdk:service:vision",
+      "model": "rdk:builtin:mlmodel",
+      "attributes": {
+        "mlmodel_name": "cube-finder-model",
+        "camera_name": "left-cam",
+        "default_minimum_confidence": 0.5,
+        "label_path": "${packages.ml_model.cube-finder-teleopdemo}/labels.txt",
+        "ui_folder": {
+          "name": "vision"
+        }
+      },
+      "ui_folder": {
+        "name": "sorting-demo"
+      }
+    },
+    {
+      "name": "discovery-1",
+      "api": "rdk:service:discovery",
+      "model": "viam:realsense:discovery",
+      "attributes": {}
+    },
+    {
+      "name": "discovery-webcam",
+      "api": "rdk:service:discovery",
+      "model": "viam:find-webcams:webcam-discovery",
+      "attributes": {}
+    },
+    {
+      "name": "shell-1",
+      "api": "rdk:service:shell",
+      "model": "rdk:builtin:builtin",
+      "attributes": {}
+    },
+    {
+      "name": "teleop-service",
+      "api": "rdk:service:generic",
+      "model": "viam:vive:teleop",
+      "attributes": {
+        "capture_control_sensor": "capture-control",
+        "hands": [
+          {
+            "scale": 1.2,
+            "name": "left",
+            "smooth_alpha": 0.05,
+            "controller": "left-vive",
+            "arm": "left-arm",
+            "gripper": "left-gripper"
+          },
+          {
+            "name": "right",
+            "scale": 1.2,
+            "controller": "right-vive",
+            "smooth_alpha-off": 1,
+            "smooth_alpha": 0.05,
+            "arm": "right-arm",
+            "gripper": "right-gripper"
+          }
+        ]
+      },
+      "ui_folder": {
+        "name": "teleop"
+      }
+    },
+    {
+      "name": "streamdeck",
+      "api": "rdk:service:generic",
+      "model": "erh:viam-streamdeck:streamdeck-any",
+      "attributes": {
+        "keys": [
+          {
+            "args": [
+              2
+            ],
+            "text": "Left Home",
+            "key": 0,
+            "color": "green",
+            "component": "arm-left-reset",
+            "method": "set_position"
+          },
+          {
+            "args": [
+              {
+                "enter_joint_online_mode": true
+              }
+            ],
+            "text": "Left 6",
+            "key": 1,
+            "color": "teal",
+            "component": "left-arm",
+            "method": "do_command"
+          },
+          {
+            "args": [
+              {
+                "enter_joint_online_mode": true
+              }
+            ],
+            "text": "Right 6",
+            "key": 2,
+            "color": "teal",
+            "component": "right-arm",
+            "method": "do_command"
+          },
+          {
+            "args": [
+              {
+                "exit_joint_online_mode": true
+              }
+            ],
+            "text": "exit Left 6",
+            "key": 3,
+            "color": "red",
+            "component": "left-arm",
+            "method": "do_command"
+          },
+          {
+            "args": [
+              {
+                "exit_joint_online_mode": true
+              }
+            ],
+            "text": "exit Right 6",
+            "key": 8,
+            "color": "red",
+            "component": "right-arm",
+            "method": "do_command"
+          },
+          {
+            "component": "arm-right-reset",
+            "method": "set_position",
+            "args": [
+              2
+            ],
+            "text": "Right Home",
+            "key": 4,
+            "color": "green"
+          },
+          {
+            "method": "do_command",
+            "args": [
+              {
+                "set_gripper_speed": 5000
+              }
+            ],
+            "text": "Set Left Gripper Speed",
+            "key": 5,
+            "color": "teal",
+            "component": "left-gripper"
+          },
+          {
+            "color": "purple",
+            "component": "right-gripper",
+            "method": "do_command",
+            "args": [
+              {
+                "set_gripper_speed": 5000
+              }
+            ],
+            "text": "Set Right Gripper Speed",
+            "key": 9
+          },
+          {
+            "args": [
+              {
+                "restart": "viam_vive"
+              }
+            ],
+            "text": "Restart Vive Module",
+            "key": 10,
+            "color": "red",
+            "component": "module-restarter",
+            "method": "do_command"
+          },
+          {
+            "component": "generic-1",
+            "method": "do_command",
+            "args": [
+              {
+                "command": "execute_sequence"
+              }
+            ],
+            "text": "sequence",
+            "key": 14,
+            "color": "blue"
+          },
+          {
+            "key": 6,
+            "color": "red",
+            "component": "sorter-service",
+            "method": "do_command",
+            "args": [
+              {
+                "command": "stop"
+              }
+            ],
+            "text": "stop sorter"
+          },
+          {
+            "component": "sorter-service",
+            "method": "do_command",
+            "args": [
+              {
+                "command": "start"
+              }
+            ],
+            "text": "resume sorter",
+            "key": 7,
+            "color": "green"
+          },
+          {
+            "method": "do_command",
+            "args": [
+              {
+                "command": "start",
+                "phase": "sort"
+              }
+            ],
+            "text": "start sorting",
+            "key": 11,
+            "color": "blue",
+            "component": "sorter-service"
+          },
+          {
+            "key": 12,
+            "color": "purple",
+            "component": "sorter-service",
+            "method": "do_command",
+            "args": [
+              {
+                "phase": "return",
+                "command": "start"
+              }
+            ],
+            "text": "start return"
+          },
+          {
+            "args": [
+              {
+                "restart": "viam_cube_sorter_demo"
+              }
+            ],
+            "text": "Restart Cube Sorter",
+            "key": 13,
+            "color": "red",
+            "component": "module-restarter",
+            "method": "do_command"
+          }
+        ],
+        "brightness": 100
+      }
+    },
+    {
+      "name": "module-restarter",
+      "api": "rdk:service:generic",
+      "model": "clint:module-restart:module_restarter",
+      "attributes": {},
+      "ui_folder": {
+        "name": "utils"
+      }
+    },
+    {
+      "name": "generic-1",
+      "api": "rdk:service:generic",
+      "model": "viam:foo:generic-service",
+      "attributes": {
+        "switch2_name": "arm-left-2",
+        "switch3_name": "arm-left-3",
+        "switch4_name": "arm-left-4",
+        "gripper_name": "left-gripper",
+        "switch1_name": "arm-left-1"
+      }
+    },
+    {
+      "name": "data_manager-1",
+      "api": "rdk:service:data_manager",
+      "model": "rdk:builtin:builtin",
+      "attributes": {
+        "additional_sync_paths": [],
+        "sync_interval_mins": 1,
+        "capture_dir": "",
+        "tags": [],
+        "capture_control_sensor": {
+          "name": "capture-control",
+          "key": "overrides"
+        }
+      }
+    },
+    {
+      "name": "camera-calibrator",
+      "api": "rdk:service:generic",
+      "model": "viam:opencv:camera_calibration",
+      "attributes": {
+        "pattern_size": [
+          9,
+          14
+        ],
+        "square_size_mm": 20
+      },
+      "disabled": true,
+      "ui_folder": {
+        "name": "z camera calibration"
+      }
+    },
+    {
+      "name": "hand-eye-service-right",
+      "api": "rdk:service:generic",
+      "model": "viam:opencv:hand_eye_calibration",
+      "attributes": {
+        "pose_tracker": "chessboard-poses-right",
+        "calibration_type": "eye-in-hand",
+        "motion": "builtin",
+        "body_name": "corner_0",
+        "arm_name": "right-arm",
+        "pose_selection": "auto",
+        "method": "CALIB_HAND_EYE_TSAI",
+        "sleep_seconds": 2,
+        "solver": "hybrid",
+        "pose_sampling": {
+          "workspace_bounds": {
+            "z": {
+              "min": 400,
+              "max": 900
+            },
+            "x": {
+              "max": 700,
+              "min": 100
+            },
+            "y": {
+              "max": 700,
+              "min": 0
+            }
+          },
+          "look_at_point": [
+            300,
+            450,
+            0
+          ],
+          "n_poses": 20,
+          "max_attempts": 40,
+          "roll_range_deg": [
+            -25,
+            25
+          ]
+        }
+      },
+      "disabled": true,
+      "ui_folder": {
+        "name": "z camera calibration"
+      }
+    },
+    {
+      "name": "hand-eye-service-left",
+      "api": "rdk:service:generic",
+      "model": "viam:opencv:hand_eye_calibration",
+      "attributes": {
+        "motion": "builtin",
+        "solver": "hybrid",
+        "pose_selection": "auto",
+        "method": "CALIB_HAND_EYE_TSAI",
+        "pose_sampling": {
+          "n_poses": 20,
+          "max_attempts": 100,
+          "roll_range_deg": [
+            -180,
+            180
+          ],
+          "workspace_bounds": {
+            "x": {
+              "min": 100,
+              "max": 700
+            },
+            "y": {
+              "min": -700,
+              "max": -100
+            },
+            "z": {
+              "min": 400,
+              "max": 900
+            }
+          },
+          "look_at_point": [
+            300,
+            -450,
+            0
+          ]
+        },
+        "calibration_type": "eye-in-hand",
+        "pose_tracker": "chessboard-poses-left",
+        "sleep_seconds": 3,
+        "arm_name": "left-arm",
+        "body_name": "corner_0"
+      },
+      "disabled": true,
+      "ui_folder": {
+        "name": "z camera calibration"
+      }
+    }
+  ],
+  "modules": [
+    {
+      "type": "registry",
+      "name": "cube-sorter-demo",
+      "module_id": "clint:cube-sorter-demo",
+      "version": "latest-with-prerelease"
+    },
+    {
+      "type": "registry",
+      "name": "viam_tflite_cpu",
+      "module_id": "viam:tflite_cpu",
+      "version": "latest"
+    },
+    {
+      "type": "registry",
+      "name": "viam_pouring-demo_from_reload",
+      "module_id": "viam:pouring-demo",
+      "version": "latest-with-prerelease",
+      "reload_path": "~/.viam/packages-local/viam_pouring-demo_from_reload-module.tar.gz",
+      "reload_enabled": false
+    },
+    {
+      "type": "registry",
+      "name": "viam_realsense",
+      "module_id": "viam:realsense",
+      "version": "latest"
+    },
+    {
+      "type": "registry",
+      "name": "viam_find-webcams",
+      "module_id": "viam:find-webcams",
+      "version": "latest"
+    },
+    {
+      "type": "registry",
+      "name": "viam_ufactory_from_reload",
+      "module_id": "viam:ufactory",
+      "version": "latest-with-prerelease",
+      "reload_enabled": true,
+      "reload_user": "key-a20f0a4d-0b55-4018-9ebb-d380d3d147e1",
+      "reload_time": "2026-06-17T20:33:22Z"
+    },
+    {
+      "type": "registry",
+      "name": "viam_vive",
+      "module_id": "viam:vive",
+      "version": "latest-with-prerelease",
+      "reload_path": "~/.viam/packages-local/viam_vive_from_reload-module.tar.gz",
+      "reload_enabled": false,
+      "reload_user": "clint.purser@viam.com",
+      "reload_time": "2026-04-15T13:20:23Z"
+    },
+    {
+      "type": "registry",
+      "name": "erh_viam-streamdeck",
+      "module_id": "erh:viam-streamdeck",
+      "version": "latest"
+    },
+    {
+      "type": "registry",
+      "name": "clint_module-restart",
+      "module_id": "clint:module-restart",
+      "version": "latest-with-prerelease"
+    },
+    {
+      "type": "registry",
+      "name": "viam_arm-demo-gripper-sequence",
+      "module_id": "viam:arm-demo-gripper-sequence",
+      "version": "latest"
+    },
+    {
+      "type": "registry",
+      "name": "viam_detections-to-segments",
+      "module_id": "viam:detections-to-segments",
+      "version": "latest"
+    },
+    {
+      "type": "registry",
+      "name": "viam_opencv",
+      "module_id": "viam:opencv",
+      "version": "latest",
+      "disabled": true
+    }
+  ],
+  "packages": [
+    {
+      "name": "cube-finder-teleopdemo",
+      "package": "e76d1b3b-0468-4efd-bb7f-fb1d2b352fcb/cube-finder-teleopdemo",
+      "type": "ml_model",
+      "version": "latest"
+    }
+  ],
+  "triggers": [
+    {
+      "name": "offline-trigger",
+      "event": {
+        "type": "part_offline"
+      },
+      "notifications": [
+        {
+          "type": "push",
+          "value": "clint.purser@viam.com",
+          "application": "com.viam.viammobile",
+          "seconds_between_notifications": 7200
+        }
+      ]
+    }
+  ],
+  "fragments": [
+    {
+      "id": "99e1b138-3809-4bf4-a758-4641731a26b6",
+      "variables": {
+        "right-arm-ip-address": "192.168.1.206",
+        "right-cam-serial": "332522076372",
+        "left-arm-ip-address": "192.168.1.212",
+        "left-cam-serial": "243322071795",
+        "glass-cam-video-path": "video0"
+      }
+    }
+  ],
+  "fragment_mods": [
+    {
+      "fragment_id": "99e1b138-3809-4bf4-a758-4641731a26b6",
+      "mods": [
+        {
+          "$set": {
+            "components.cam-glass.disabled": true
+          }
+        },
+        {
+          "$set": {
+            "components.obstacle-arm-left-cord.disabled": true
+          }
+        },
+        {
+          "$set": {
+            "components.obstacle-table-corner-left.disabled": true
+          }
+        },
+        {
+          "$set": {
+            "components.obstacle-table-corner-right.disabled": true
+          }
+        },
+        {
+          "$set": {
+            "components.obstacle-left-wall.frame.orientation.value.th": -90,
+            "components.obstacle-left-wall.attributes.geometries": [
+              {
+                "y": 1800,
+                "z": 1000,
+                "label": "left-wall",
+                "type": "box",
+                "x": 10
+              }
+            ],
+            "components.obstacle-left-wall.frame.translation.y": -300,
+            "components.obstacle-left-wall.frame.translation.z": 500
+          }
+        },
+        {
+          "$set": {
+            "components.obstacle-right-wall.frame.orientation.value.th": 90,
+            "components.obstacle-right-wall.attributes.geometries": [
+              {
+                "label": "right-wall",
+                "type": "box",
+                "x": 10,
+                "y": 1800,
+                "z": 1000
+              }
+            ],
+            "components.obstacle-right-wall.frame.translation.y": 1300,
+            "components.obstacle-right-wall.frame.translation.z": 500
+          }
+        },
+        {
+          "$set": {
+            "components.obstacle-back-wall.frame.translation.x": -350,
+            "components.obstacle-back-wall.frame.translation.z": 500,
+            "components.obstacle-back-wall.attributes.geometries": [
+              {
+                "type": "box",
+                "x": 10,
+                "y": 1800,
+                "z": 1000,
+                "label": "back-wall"
+              }
+            ]
+          }
+        },
+        {
+          "$set": {
+            "components.obstacle-table.attributes.geometries": [
+              {
+                "x": 1800,
+                "y": 1800,
+                "z": 10,
+                "label": "table",
+                "type": "box"
+              }
+            ]
+          }
+        },
+        {
+          "$set": {
+            "components.obstacle-front-wall.frame.translation.x": 750,
+            "components.obstacle-front-wall.attributes.geometries": [
+              {
+                "x": 10,
+                "y": 1800,
+                "z": 1000,
+                "label": "front-wall",
+                "type": "box"
+              }
+            ]
+          }
+        },
+        {
+          "$set": {
+            "components.obstacle-front-wall.frame": {
+              "parent": "obstacle-table",
+              "orientation": {
+                "type": "ov_degrees",
+                "value": {
+                  "z": 1,
+                  "th": 0,
+                  "x": 0,
+                  "y": 0
+                }
+              },
+              "translation": {
+                "z": 500,
+                "x": 638,
+                "y": 0
+              }
+            }
+          }
+        },
+        {
+          "$set": {
+            "components.obstacle-ceiling.attributes.geometries": [
+              {
+                "y": 1800,
+                "z": 10,
+                "label": "ceiling",
+                "type": "box",
+                "x": 1800
+              }
+            ]
+          }
+        },
+        {
+          "$set": {
+            "components.obstacle-left-monitor.disabled": true
+          }
+        },
+        {
+          "$set": {
+            "components.right-gripper.frame.orientation.value.z": 1,
+            "components.right-gripper.attributes.gripper_speed": 5000,
+            "components.right-gripper.frame.orientation.value.th": 0,
+            "components.right-gripper.frame.translation.z": 105,
+            "components.right-gripper.frame.orientation.type": "ov_degrees"
+          }
+        },
+        {
+          "$unset": {
+            "components.right-gripper.frame.orientation.value.w": ""
+          }
+        },
+        {
+          "$set": {
+            "components.left-gripper.attributes.gripper_speed": 5000,
+            "components.left-gripper.frame.orientation.value.th": 0,
+            "components.left-gripper.frame.translation.z": 105,
+            "components.left-gripper.frame.orientation.type": "ov_degrees",
+            "components.left-gripper.frame.orientation.value.z": 1
+          }
+        },
+        {
+          "$unset": {
+            "components.left-gripper.frame.orientation.value.w": ""
+          }
+        },
+        {
+          "$set": {
+            "services.builtin.attributes.teleop_interpolate_override": false,
+            "services.builtin.attributes.input_range_override": {
+              "right-arm": {
+                "0": {
+                  "max": 1.7044,
+                  "min": -1.507
+                },
+                "3": {
+                  "min": -2.0944,
+                  "max": 2.0944
+                },
+                "5": {
+                  "min": -2.3,
+                  "max": 2.3
+                }
+              },
+              "left-arm": {
+                "0": {
+                  "min": -1.7044,
+                  "max": 1.507
+                },
+                "3": {
+                  "min": -2.0944,
+                  "max": 2.0944
+                },
+                "5": {
+                  "min": -2.3,
+                  "max": 2.3
+                }
+              }
+            },
+            "services.builtin.attributes.teleop_smooth_alpha": 0.5,
+            "services.builtin.service_configs": [
+              {
+                "type": "data_manager",
+                "attributes": {
+                  "capture_methods": []
+                }
+              }
+            ],
+            "services.builtin.attributes.plan_file_path": "/root/.viam/capture",
+            "services.builtin.attributes.log_slow_plan_threshold_ms": 4
+          }
+        },
+        {
+          "$set": {
+            "components.left-cam.frame.geometry": {
+              "type": "box",
+              "x": 1,
+              "y": 1,
+              "z": 1
+            },
+            "components.left-cam.frame.translation.x": -70.19460675783426,
+            "components.left-cam.frame.translation.y": 28.489548587571083,
+            "components.left-cam.frame.translation.z": 9.268866164088855,
+            "components.left-cam.frame.orientation.value.x": -0.0181002648,
+            "components.left-cam.frame.orientation.value.y": 0.0169300176,
+            "components.left-cam.frame.orientation.value.z": 0.9996928303,
+            "components.left-cam.frame.orientation.value.th": 133.00795224
+          }
+        },
+        {
+          "$set": {
+            "components.right-cam.frame.geometry": {
+              "type": "box",
+              "x": 1,
+              "y": 1,
+              "z": 1
+            },
+            "components.right-cam.attributes.serial_number": "247122074401",
+            "components.right-cam.frame.translation.x": -70.19460675783426,
+            "components.right-cam.frame.translation.y": 28.489548587571083,
+            "components.right-cam.frame.translation.z": 9.268866164088855,
+            "components.right-cam.frame.orientation.value.x": -0.0181002648,
+            "components.right-cam.frame.orientation.value.y": 0.0169300176,
+            "components.right-cam.frame.orientation.value.z": 0.9996928303,
+            "components.right-cam.frame.orientation.value.th": 133.00795224
+          }
+        },
+        {
+          "$set": {
+            "components.left-arm.attributes.acceleration_degs_per_sec_per_sec": 400,
+            "components.left-arm.attributes.motion": "builtin",
+            "components.left-arm.attributes.ufactory-studio-proxy-port": 18334,
+            "components.left-arm.attributes.ufactory-studio-proxy": true,
+            "components.left-arm.attributes.collision_sensitivity": 3,
+            "components.left-arm.attributes.speed_degs_per_sec": 120,
+            "components.left-arm.frame.translation.y": 1003,
+            "components.left-arm.frame.orientation.value.th": 0
+          }
+        },
+        {
+          "$set": {
+            "components.right-arm.attributes.acceleration_degs_per_sec_per_sec": 400,
+            "components.right-arm.attributes.motion": "builtin",
+            "components.right-arm.attributes.ufactory-studio-proxy": true,
+            "components.right-arm.attributes.ufactory-studio-proxy-port": 18333,
+            "components.right-arm.attributes.speed_degs_per_sec": 120,
+            "components.right-arm.attributes.collision_sensitivity": 3,
+            "components.right-arm.frame.translation.y": 0,
+            "components.right-arm.frame.orientation.value.th": 0
+          }
+        },
+        {
+          "$set": {
+            "components.left-arm.service_configs": [
+              {
+                "type": "data_manager",
+                "attributes": {
+                  "capture_methods": [
+                    {"method": "EndPosition", "capture_frequency_hz": 0},
+                    {"method": "JointPositions", "capture_frequency_hz": 0}
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "$set": {
+            "components.right-arm.service_configs": [
+              {
+                "type": "data_manager",
+                "attributes": {
+                  "capture_methods": [
+                    {"method": "EndPosition", "capture_frequency_hz": 0},
+                    {"method": "JointPositions", "capture_frequency_hz": 0}
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "$set": {
+            "components.left-cam.service_configs": [
+              {
+                "type": "data_manager",
+                "attributes": {
+                  "capture_methods": [
+                    {"method": "GetImages", "capture_frequency_hz": 0}
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "$set": {
+            "components.right-cam.service_configs": [
+              {
+                "type": "data_manager",
+                "attributes": {
+                  "capture_methods": [
+                    {"method": "GetImages", "capture_frequency_hz": 0}
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "$set": {
+            "components.left-gripper.service_configs": [
+              {
+                "type": "data_manager",
+                "attributes": {
+                  "capture_methods": [
+                    {"method": "DoCommand", "capture_frequency_hz": 0, "additional_params": {"docommand_input": {"get": true}}}
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "$set": {
+            "components.right-gripper.service_configs": [
+              {
+                "type": "data_manager",
+                "attributes": {
+                  "capture_methods": [
+                    {"method": "DoCommand", "capture_frequency_hz": 0, "additional_params": {"docommand_input": {"get": true}}}
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "tracing": {
+    "enabled": true,
+    "disk": true
+  }
+}

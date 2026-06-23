@@ -162,6 +162,10 @@ func (s *viveController) Name() resource.Name {
 	return s.name
 }
 
+func (s *viveController) Status(ctx context.Context) (map[string]interface{}, error) {
+	return map[string]interface{}{}, nil
+}
+
 // DeviceName returns the resolved libsurvive device name for this controller.
 func (s *viveController) DeviceName() string {
 	s.mu.RLock()
