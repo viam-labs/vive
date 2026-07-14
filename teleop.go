@@ -41,6 +41,8 @@ type HandConfig struct {
 	Controller      string  `json:"controller"`
 	Arm             string  `json:"arm"`
 	Gripper         string  `json:"gripper,omitempty"`
+	GripperType     string  `json:"gripper_type,omitempty"`     // "proportional" (default) | "vacuum"
+	VacuumThreshold float64 `json:"vacuum_threshold,omitempty"` // trigger fraction to engage vacuum; default 0.5
 	Scale           float64 `json:"scale,omitempty"`
 	RotationEnabled *bool   `json:"rotation_enabled,omitempty"`
 	PosDeadzoneMM   float64 `json:"pos_deadzone_mm,omitempty"`
@@ -68,6 +70,11 @@ func (cfg *TeleopConfig) Validate(path string) ([]string, []string, error) {
 		}
 		if h.Arm == "" {
 			return nil, nil, fmt.Errorf("%s: hand %q must have an arm", path, h.Name)
+		}
+		switch h.GripperType {
+		case "", "proportional", "vacuum":
+		default:
+			return nil, nil, fmt.Errorf("%s: hand %q has invalid gripper_type %q (want \"proportional\" or \"vacuum\")", path, h.Name, h.GripperType)
 		}
 		deps = append(deps, h.Controller, h.Arm)
 		if h.Gripper != "" {

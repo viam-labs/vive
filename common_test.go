@@ -140,3 +140,19 @@ func TestVacuumEngaged(t *testing.T) {
 		})
 	}
 }
+
+func TestTeleopConfigValidate_GripperType(t *testing.T) {
+	base := func(gt string) *TeleopConfig {
+		return &TeleopConfig{Hands: []HandConfig{
+			{Name: "r", Controller: "c", Arm: "a", GripperType: gt},
+		}}
+	}
+	for _, gt := range []string{"", "proportional", "vacuum"} {
+		if _, _, err := base(gt).Validate("p"); err != nil {
+			t.Errorf("gripper_type %q: unexpected error %v", gt, err)
+		}
+	}
+	if _, _, err := base("magnet").Validate("p"); err == nil {
+		t.Error("gripper_type \"magnet\": expected validation error, got nil")
+	}
+}
