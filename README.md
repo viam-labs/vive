@@ -81,9 +81,9 @@ Returns:
       "arm": "right-arm",
       // optional — gripper component, trigger controls proportional grip
       "gripper": "right-gripper",
-      // optional — "proportional" (default) or "vacuum"; vacuum makes the trigger toggle suction on/off
+      // optional — "proportional" (default) or "vacuum"; vacuum makes the trigger engage suction past a threshold
       "gripper_type": "vacuum",
-      // optional — trigger fraction (0.1–0.9) to engage vacuum suction; default 0.5
+      // optional — trigger fraction, greater than 0.1 and less than 0.9, to engage vacuum suction; default 0.5
       "vacuum_threshold": 0.5,
       // default: 1.0 — position multiplier (2.0 = arm moves 2x your hand)
       "scale": 1.0,
