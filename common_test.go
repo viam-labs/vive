@@ -163,12 +163,12 @@ func TestTeleopConfigValidate_VacuumThreshold(t *testing.T) {
 			{Name: "r", Controller: "c", Arm: "a", GripperType: "vacuum", VacuumThreshold: vt},
 		}}
 	}
-	for _, vt := range []float64{0, 0.5, 1} {
+	for _, vt := range []float64{0, 0.5, 0.2, 0.8} {
 		if _, _, err := base(vt).Validate("p"); err != nil {
 			t.Errorf("vacuum_threshold %v: unexpected error %v", vt, err)
 		}
 	}
-	for _, vt := range []float64{1.5, -0.1} {
+	for _, vt := range []float64{1.5, -0.1, 0.05, 0.95, 0.1, 0.9} {
 		if _, _, err := base(vt).Validate("p"); err == nil {
 			t.Errorf("vacuum_threshold %v: expected validation error, got nil", vt)
 		}

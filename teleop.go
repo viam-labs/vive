@@ -76,8 +76,9 @@ func (cfg *TeleopConfig) Validate(path string) ([]string, []string, error) {
 		default:
 			return nil, nil, fmt.Errorf("%s: hand %q has invalid gripper_type %q (want \"proportional\" or \"vacuum\")", path, h.Name, h.GripperType)
 		}
-		if h.VacuumThreshold < 0 || h.VacuumThreshold > 1 {
-			return nil, nil, fmt.Errorf("%s: hand %q vacuum_threshold %v out of range [0,1]", path, h.Name, h.VacuumThreshold)
+		if h.VacuumThreshold != 0 && (h.VacuumThreshold <= vacuumHysteresisBand || h.VacuumThreshold >= 1-vacuumHysteresisBand) {
+			return nil, nil, fmt.Errorf("%s: hand %q vacuum_threshold %v must be 0 (default) or in (%v, %v) to leave room for the hysteresis band",
+				path, h.Name, h.VacuumThreshold, vacuumHysteresisBand, 1-vacuumHysteresisBand)
 		}
 		deps = append(deps, h.Controller, h.Arm)
 		if h.Gripper != "" {
