@@ -165,6 +165,12 @@ type teleopHand struct {
 	lastGripperPos int
 	gripperPosInit bool
 
+	// gripper vacuum control
+	gripperType     string
+	vacuumThreshold float64
+	vacuumOn        bool        // last committed on/off state (drives hysteresis hold)
+	vacuumDesired   atomic.Bool // handed to the vacuum loop
+
 	// control state
 	isControlling bool
 	teleopActive  bool
@@ -308,6 +314,15 @@ func NewTeleopService(ctx context.Context, deps resource.Dependencies, name reso
 			}
 		}
 
+		gripperType := hc.GripperType
+		if gripperType == "" {
+			gripperType = "proportional"
+		}
+		vacuumThreshold := hc.VacuumThreshold
+		if vacuumThreshold <= 0 {
+			vacuumThreshold = 0.5
+		}
+
 		scale := hc.Scale
 		if scale <= 0 {
 			scale = 1.0
@@ -344,6 +359,8 @@ func NewTeleopService(ctx context.Context, deps resource.Dependencies, name reso
 			motionSvc:       motionSvc,
 			armName:         hc.Arm,
 			gripperName:     hc.Gripper,
+			gripperType:     gripperType,
+			vacuumThreshold: vacuumThreshold,
 			scale:           scale,
 			rotEnabled:      rotEnabled,
 			absoluteRot:     true,
@@ -1379,6 +1396,10 @@ func (h *teleopHand) teleopStatusLoop(ctx context.Context) {
 }
 
 func (h *teleopHand) gripperLoop(ctx context.Context) {
+	if h.gripperType == "vacuum" {
+		h.vacuumLoop(ctx)
+		return
+	}
 	lastSent := int64(-1)
 	for {
 		select {
@@ -1398,9 +1419,49 @@ func (h *teleopHand) gripperLoop(ctx context.Context) {
 	}
 }
 
+func (h *teleopHand) vacuumLoop(ctx context.Context) {
+	lastSent := false
+	inited := false
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-h.gripperNotify:
+		}
+		on := h.vacuumDesired.Load()
+		if inited && on == lastSent {
+			continue
+		}
+		inited = true
+		lastSent = on
+		if on {
+			grabbed, err := h.gripper.Grab(ctx, nil)
+			if err != nil {
+				h.svc.logger.Warnf("[%s] vacuum grab: %v", h.name, err)
+			} else if !grabbed {
+				h.svc.logger.Debugf("[%s] vacuum grab reported no object held", h.name)
+			}
+		} else if err := h.gripper.Open(ctx, nil); err != nil {
+			h.svc.logger.Warnf("[%s] vacuum open: %v", h.name, err)
+		}
+	}
+}
+
 func (h *teleopHand) tick(ctx context.Context, cs ControllerState) {
-	// Gripper: trigger → proportional position.
-	if h.gripper != nil {
+	// Gripper: trigger drives the gripper. Runs regardless of arm-control state
+	// so suction/grip is decoupled from the grip button.
+	if h.gripper != nil && h.gripperType == "vacuum" {
+		on := vacuumEngaged(cs.Trigger, h.vacuumThreshold, vacuumHysteresisBand, h.vacuumOn)
+		if on != h.vacuumOn {
+			h.vacuumOn = on
+			h.vacuumDesired.Store(on)
+			h.sendHaptic(0.3, 60) // brief confirm on engage/release
+			select {
+			case h.gripperNotify <- struct{}{}:
+			default:
+			}
+		}
+	} else if h.gripper != nil {
 		pos := 830 - int(cs.Trigger*820)
 		if pos < 10 {
 			pos = 10
