@@ -156,3 +156,21 @@ func TestTeleopConfigValidate_GripperType(t *testing.T) {
 		t.Error("gripper_type \"magnet\": expected validation error, got nil")
 	}
 }
+
+func TestTeleopConfigValidate_VacuumThreshold(t *testing.T) {
+	base := func(vt float64) *TeleopConfig {
+		return &TeleopConfig{Hands: []HandConfig{
+			{Name: "r", Controller: "c", Arm: "a", GripperType: "vacuum", VacuumThreshold: vt},
+		}}
+	}
+	for _, vt := range []float64{0, 0.5, 1} {
+		if _, _, err := base(vt).Validate("p"); err != nil {
+			t.Errorf("vacuum_threshold %v: unexpected error %v", vt, err)
+		}
+	}
+	for _, vt := range []float64{1.5, -0.1} {
+		if _, _, err := base(vt).Validate("p"); err == nil {
+			t.Errorf("vacuum_threshold %v: expected validation error, got nil", vt)
+		}
+	}
+}
