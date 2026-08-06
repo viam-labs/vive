@@ -407,8 +407,21 @@ func TestCaptureControl_ResponsePayloadsCarryBothKeys(t *testing.T) {
 	}
 
 	stop := do(t, cc, map[string]interface{}{"stop-capture": "left"})
-	if got, _ := stop["active_grips"].(int); got != 0 {
-		t.Errorf("stop-capture active_grips = %v, want 0", stop["active_grips"])
+	// Two-value assertion: a missing or wrongly-typed key yields the zero value,
+	// which would equal the expectation and pass silently.
+	gotGrips, ok := stop["active_grips"].(int)
+	if !ok {
+		t.Fatalf("stop-capture active_grips = %v (%T), want int", stop["active_grips"], stop["active_grips"])
+	}
+	if gotGrips != 0 {
+		t.Errorf("stop-capture active_grips = %d, want 0", gotGrips)
+	}
+	gotHands, ok := stop["active_hands"].([]string)
+	if !ok {
+		t.Fatalf("stop-capture active_hands = %v (%T), want []string", stop["active_hands"], stop["active_hands"])
+	}
+	if len(gotHands) != 0 {
+		t.Errorf("stop-capture active_hands = %v, want empty", gotHands)
 	}
 }
 
@@ -416,18 +429,35 @@ func TestCaptureControl_ConcurrentGrips(t *testing.T) {
 	cc, _ := newTestCC(t, &CaptureControlConfig{ArmName: "arm", DisableSequences: true})
 
 	const iterations = 200
+	// Collect errors rather than calling t.Fatalf from these goroutines — FailNow
+	// is only legal on the test goroutine.
+	errs := make(chan error, 4)
 	var wg sync.WaitGroup
 	for _, hand := range []string{"left", "right"} {
 		wg.Add(1)
 		go func(name string) {
 			defer wg.Done()
 			for i := 0; i < iterations; i++ {
-				do(t, cc, map[string]interface{}{"start-capture": name})
-				do(t, cc, map[string]interface{}{"stop-capture": name})
+				for _, cmd := range []map[string]interface{}{
+					{"start-capture": name},
+					{"stop-capture": name},
+				} {
+					if _, err := cc.DoCommand(context.Background(), cmd); err != nil {
+						select {
+						case errs <- err:
+						default:
+						}
+						return
+					}
+				}
 			}
 		}(hand)
 	}
 	wg.Wait()
+	close(errs)
+	if err := <-errs; err != nil {
+		t.Fatalf("DoCommand from worker goroutine: %v", err)
+	}
 
 	// Every start was matched by a stop, so the terminal state must be idle
 	// regardless of how the two hands interleaved.

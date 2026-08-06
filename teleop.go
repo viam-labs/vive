@@ -62,7 +62,17 @@ func (cfg *TeleopConfig) Validate(path string) ([]string, []string, error) {
 		return nil, nil, fmt.Errorf("%s: at least one hand must be configured", path)
 	}
 	var deps []string
+	seenNames := make(map[string]struct{}, len(cfg.Hands))
 	for _, h := range cfg.Hands {
+		// The capture session's owner set is keyed by hand name, so an empty or
+		// duplicated name would let one hand's release end another hand's session.
+		if h.Name == "" {
+			return nil, nil, fmt.Errorf("%s: every hand must have a name", path)
+		}
+		if _, dup := seenNames[h.Name]; dup {
+			return nil, nil, fmt.Errorf("%s: duplicate hand name %q", path, h.Name)
+		}
+		seenNames[h.Name] = struct{}{}
 		if h.Controller == "" {
 			return nil, nil, fmt.Errorf("%s: hand %q must have a controller", path, h.Name)
 		}
