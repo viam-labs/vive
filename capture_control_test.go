@@ -2,6 +2,8 @@ package vive
 
 import (
 	"context"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -352,5 +354,87 @@ func TestCaptureControl_CloseDiscardsSessionAndClearsOwners(t *testing.T) {
 	do(t, cc, map[string]interface{}{"start-capture": "left"})
 	if !cc.capturing {
 		t.Error("expected a fresh session after Close then re-grip")
+	}
+}
+
+func TestCaptureControl_DisableSequencesSuppressesCreation(t *testing.T) {
+	cc, rec := newTestCC(t, &CaptureControlConfig{ArmName: "arm", DisableSequences: true})
+
+	do(t, cc, map[string]interface{}{"start-capture": "left"})
+	if !cc.capturing {
+		t.Fatal("disable_sequences must not affect capture state")
+	}
+	do(t, cc, map[string]interface{}{"stop-capture": "left"})
+	if cc.capturing {
+		t.Fatal("expected not capturing after stop")
+	}
+
+	// The gate lives at the call site, ahead of sequenceFn.
+	rec.none(t)
+}
+
+func TestCaptureControl_SessionTags(t *testing.T) {
+	cc, _ := newTestCC(t, nil)
+
+	do(t, cc, map[string]interface{}{"start-capture": "left"})
+	if n := len(cc.sessionTags); n != 1 {
+		t.Fatalf("sessionTags = %v, want exactly the session tag", cc.sessionTags)
+	}
+	if !strings.HasPrefix(cc.sessionTags[0], "session:") {
+		t.Errorf("sessionTags[0] = %q, want a session: prefix", cc.sessionTags[0])
+	}
+	do(t, cc, map[string]interface{}{"stop-capture": "left"})
+
+	do(t, cc, map[string]interface{}{"set_task": "pick-block"})
+	do(t, cc, map[string]interface{}{"start-capture": "left"})
+	if n := len(cc.sessionTags); n != 2 {
+		t.Fatalf("sessionTags = %v, want session and cmd tags", cc.sessionTags)
+	}
+	if cc.sessionTags[1] != "cmd:pick-block" {
+		t.Errorf("sessionTags[1] = %q, want cmd:pick-block", cc.sessionTags[1])
+	}
+}
+
+func TestCaptureControl_ResponsePayloadsCarryBothKeys(t *testing.T) {
+	cc, _ := newTestCC(t, nil)
+
+	start := do(t, cc, map[string]interface{}{"start-capture": "left"})
+	if got, _ := start["active_grips"].(int); got != 1 {
+		t.Errorf("start-capture active_grips = %v, want 1", start["active_grips"])
+	}
+	if got, _ := start["active_hands"].([]string); !equalStrings(got, []string{"left"}) {
+		t.Errorf("start-capture active_hands = %v, want [left]", start["active_hands"])
+	}
+
+	stop := do(t, cc, map[string]interface{}{"stop-capture": "left"})
+	if got, _ := stop["active_grips"].(int); got != 0 {
+		t.Errorf("stop-capture active_grips = %v, want 0", stop["active_grips"])
+	}
+}
+
+func TestCaptureControl_ConcurrentGrips(t *testing.T) {
+	cc, _ := newTestCC(t, &CaptureControlConfig{ArmName: "arm", DisableSequences: true})
+
+	const iterations = 200
+	var wg sync.WaitGroup
+	for _, hand := range []string{"left", "right"} {
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				do(t, cc, map[string]interface{}{"start-capture": name})
+				do(t, cc, map[string]interface{}{"stop-capture": name})
+			}
+		}(hand)
+	}
+	wg.Wait()
+
+	// Every start was matched by a stop, so the terminal state must be idle
+	// regardless of how the two hands interleaved.
+	if cc.capturing {
+		t.Error("expected not capturing after all grips released")
+	}
+	if got := hands(t, cc); len(got) != 0 {
+		t.Errorf("active_hands = %v, want empty", got)
 	}
 }
