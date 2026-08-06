@@ -252,6 +252,29 @@ func (cc *captureControl) DoCommand(ctx context.Context, cmd map[string]interfac
 		}, nil
 	}
 
+	if _, ok := cmd["reset-capture"]; ok {
+		cc.mu.Lock()
+		wasCapturing := cc.capturing
+		start, tags := cc.endSessionLocked()
+		cc.mu.Unlock()
+
+		// Recovery path: the teleop service can be rebuilt while this sensor stays
+		// alive, leaving owners nothing will ever release. The window's provenance is
+		// unknown — a phantom sessionStart can be hours stale — so discard it rather
+		// than create a garbage sequence. This log line is the leak diagnostic.
+		if wasCapturing {
+			cc.logger.Warnf("capture reset: discarding in-progress session tags=%v start=%s",
+				tags, start.Format(time.RFC3339))
+		}
+
+		return map[string]interface{}{
+			"capturing":     false,
+			"active_grips":  0,
+			"active_hands":  []string{},
+			"was_capturing": wasCapturing,
+		}, nil
+	}
+
 	if taskCmd, ok := cmd["set_task"]; ok {
 		cc.mu.Lock()
 		defer cc.mu.Unlock()
@@ -340,7 +363,17 @@ func (cc *captureControl) createSequence(start, end time.Time, tags []string) {
 
 func (cc *captureControl) Close(ctx context.Context) error {
 	cc.mu.Lock()
-	defer cc.mu.Unlock()
-	cc.capturing = false
+	wasCapturing := cc.capturing
+	start, tags := cc.endSessionLocked()
+	cc.mu.Unlock()
+
+	// As with reset-capture, no sequence: on every normal path the hands' teardown
+	// already sent stop-capture and created it. Reaching here with a live session
+	// means something leaked, and createSequence would dial with a 20s timeout
+	// against a shutting-down module.
+	if wasCapturing {
+		cc.logger.Infof("capture control closing: discarding in-progress session tags=%v start=%s",
+			tags, start.Format(time.RFC3339))
+	}
 	return nil
 }

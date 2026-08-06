@@ -296,3 +296,61 @@ func TestCaptureControl_SessionEndClearsOwners(t *testing.T) {
 		t.Errorf("active_hands = %v after session end, want empty", got)
 	}
 }
+
+func TestCaptureControl_ResetDiscardsSession(t *testing.T) {
+	cc, rec := newTestCC(t, nil)
+
+	do(t, cc, map[string]interface{}{"start-capture": "left"})
+	do(t, cc, map[string]interface{}{"start-capture": "right"})
+
+	resp := do(t, cc, map[string]interface{}{"reset-capture": true})
+	if was, _ := resp["was_capturing"].(bool); !was {
+		t.Error("reset-capture was_capturing = false, want true")
+	}
+	if cc.capturing {
+		t.Error("expected not capturing after reset")
+	}
+	if got := hands(t, cc); len(got) != 0 {
+		t.Errorf("active_hands = %v after reset, want empty", got)
+	}
+
+	// A reset window has unknown provenance — it must not become a cloud sequence.
+	rec.none(t)
+}
+
+func TestCaptureControl_ResetOnIdleIsANoOp(t *testing.T) {
+	cc, rec := newTestCC(t, nil)
+
+	resp := do(t, cc, map[string]interface{}{"reset-capture": true})
+	was, ok := resp["was_capturing"].(bool)
+	if !ok {
+		t.Fatalf("reset-capture response missing was_capturing: %v", resp)
+	}
+	if was {
+		t.Error("reset-capture on idle reported was_capturing = true")
+	}
+	rec.none(t)
+}
+
+func TestCaptureControl_CloseDiscardsSessionAndClearsOwners(t *testing.T) {
+	cc, rec := newTestCC(t, nil)
+
+	do(t, cc, map[string]interface{}{"start-capture": "left"})
+	if err := cc.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if cc.capturing {
+		t.Error("expected not capturing after Close")
+	}
+	if len(cc.activeHands) != 0 {
+		t.Errorf("activeHands = %v after Close, want empty", cc.activeHands)
+	}
+	rec.none(t)
+
+	// A rebuild must start clean: the next grip opens a fresh session, not a
+	// continuation wedged by a leftover owner.
+	do(t, cc, map[string]interface{}{"start-capture": "left"})
+	if !cc.capturing {
+		t.Error("expected a fresh session after Close then re-grip")
+	}
+}
