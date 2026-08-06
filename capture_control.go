@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -91,7 +92,6 @@ type captureControl struct {
 	sessionTags   []string
 	sessionStart  time.Time
 	activeHands   map[string]struct{}
-	activeGrips   int
 }
 
 func newCaptureControl(ctx context.Context, deps resource.Dependencies, rawConf resource.Config, logger logging.Logger) (sensor.Sensor, error) {
@@ -152,50 +152,90 @@ func (cc *captureControl) Readings(ctx context.Context, extra map[string]interfa
 	}, nil
 }
 
+// handKey extracts the grip owner from a start/stop-capture payload. Callers that
+// pass a non-string — the legacy {"start-capture": true} form — collapse onto one
+// anonymous owner, preserving single-grip behavior.
+func handKey(v interface{}) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+// handNamesLocked returns the current grip owners, sorted for stable output.
+// Read-only, so an RLock is sufficient.
+func (cc *captureControl) handNamesLocked() []string {
+	names := make([]string, 0, len(cc.activeHands))
+	for n := range cc.activeHands {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// beginSessionLocked opens a capture session. Caller holds mu and has verified
+// !cc.capturing — cc.capturing, not the owner-set size, is the authority for
+// whether a session is open, so the two can never drift into a state where a new
+// session inherits the previous one's tags or start time.
+func (cc *captureControl) beginSessionLocked() {
+	cc.capturing = true
+	cc.sessionStart = time.Now()
+	sessionTag := fmt.Sprintf("session:%s", cc.sessionStart.Format("20060102_150405"))
+	cc.sessionTags = []string{sessionTag}
+	if cc.task != "" {
+		cc.sessionTags = append(cc.sessionTags, fmt.Sprintf("cmd:%s", cc.task))
+	}
+	cc.logger.Infof("capture started: tags=%v freq=%.1fHz", cc.sessionTags, cc.captureFreqHz)
+}
+
+// endSessionLocked closes the current session and returns its window so the caller
+// can create the sequence outside the lock. It clears activeHands so a desynced
+// owner set cannot wedge the next session. Caller holds mu.
+func (cc *captureControl) endSessionLocked() (time.Time, []string) {
+	start, tags := cc.sessionStart, cc.sessionTags
+	cc.capturing = false
+	cc.sessionStart = time.Time{}
+	cc.sessionTags = nil
+	clear(cc.activeHands)
+	return start, tags
+}
+
 func (cc *captureControl) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
-	if _, ok := cmd["start-capture"]; ok {
+	if v, ok := cmd["start-capture"]; ok {
 		cc.mu.Lock()
 		defer cc.mu.Unlock()
 
-		cc.activeGrips++
-		if cc.activeGrips == 1 {
-			cc.capturing = true
-			cc.sessionStart = time.Now()
-			sessionTag := fmt.Sprintf("session:%s", cc.sessionStart.Format("20060102_150405"))
-			cc.sessionTags = []string{sessionTag}
-			if cc.task != "" {
-				cc.sessionTags = append(cc.sessionTags, fmt.Sprintf("cmd:%s", cc.task))
-			}
-			cc.logger.Infof("capture started: tags=%v freq=%.1fHz", cc.sessionTags, cc.captureFreqHz)
+		cc.activeHands[handKey(v)] = struct{}{}
+		if !cc.capturing {
+			cc.beginSessionLocked()
 		}
 
 		return map[string]interface{}{
 			"capturing":    true,
-			"active_grips": cc.activeGrips,
+			"active_grips": len(cc.activeHands),
+			"active_hands": cc.handNamesLocked(),
 			"tags":         cc.sessionTags,
 		}, nil
 	}
 
-	if _, ok := cmd["stop-capture"]; ok {
+	if v, ok := cmd["stop-capture"]; ok {
 		cc.mu.Lock()
-		if cc.activeGrips > 0 {
-			cc.activeGrips--
-		}
-		// Another hand is still driving — keep the session open.
-		if cc.activeGrips > 0 {
-			grips := cc.activeGrips
+		delete(cc.activeHands, handKey(v))
+
+		// Another hand is still driving, or no session was open — leave state alone.
+		// A stop for an owner we never had is a no-op, so one hand can never end
+		// another hand's session.
+		if len(cc.activeHands) > 0 || !cc.capturing {
+			resp := map[string]interface{}{
+				"capturing":    cc.capturing,
+				"active_grips": len(cc.activeHands),
+				"active_hands": cc.handNamesLocked(),
+			}
 			cc.mu.Unlock()
-			return map[string]interface{}{
-				"capturing":    true,
-				"active_grips": grips,
-			}, nil
+			return resp, nil
 		}
 
-		cc.capturing = false
-		start := cc.sessionStart
-		tags := cc.sessionTags
-		cc.sessionTags = nil
-		cc.sessionStart = time.Time{}
+		start, tags := cc.endSessionLocked()
 		cc.mu.Unlock()
 
 		cc.logger.Info("capture stopped")
@@ -208,6 +248,7 @@ func (cc *captureControl) DoCommand(ctx context.Context, cmd map[string]interfac
 		return map[string]interface{}{
 			"capturing":    false,
 			"active_grips": 0,
+			"active_hands": []string{},
 		}, nil
 	}
 
@@ -230,7 +271,8 @@ func (cc *captureControl) DoCommand(ctx context.Context, cmd map[string]interfac
 		return map[string]interface{}{
 			"capturing":            cc.capturing,
 			"capture_frequency_hz": cc.captureFreqHz,
-			"active_grips":         cc.activeGrips,
+			"active_grips":         len(cc.activeHands),
+			"active_hands":         cc.handNamesLocked(),
 			"tags":                 cc.sessionTags,
 			"task":                 cc.task,
 		}, nil

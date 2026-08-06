@@ -108,3 +108,191 @@ func TestCaptureControl_SingleGripCreatesOneSequence(t *testing.T) {
 		t.Errorf("sequence tags = %v, want %v", got.tags, tags)
 	}
 }
+
+// hands reads the current owner set via the status command.
+func hands(t *testing.T, cc *captureControl) []string {
+	t.Helper()
+	resp := do(t, cc, map[string]interface{}{"status": true})
+	got, ok := resp["active_hands"].([]string)
+	if !ok {
+		t.Fatalf("status active_hands = %v (%T), want []string", resp["active_hands"], resp["active_hands"])
+	}
+	return got
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestCaptureControl_OwnerSet(t *testing.T) {
+	tests := []struct {
+		name          string
+		ops           []map[string]interface{}
+		wantCapturing bool
+		wantHands     []string
+		wantSequences int
+	}{
+		{
+			// Two hands share one session; the first release must not end it.
+			name: "two-hand overlap keeps session open until last release",
+			ops: []map[string]interface{}{
+				{"start-capture": "left"},
+				{"start-capture": "right"},
+				{"stop-capture": "left"},
+			},
+			wantCapturing: true,
+			wantHands:     []string{"right"},
+			wantSequences: 0,
+		},
+		{
+			name: "both hands released closes the session once",
+			ops: []map[string]interface{}{
+				{"start-capture": "left"},
+				{"start-capture": "right"},
+				{"stop-capture": "left"},
+				{"stop-capture": "right"},
+			},
+			wantCapturing: false,
+			wantHands:     []string{},
+			wantSequences: 1,
+		},
+		{
+			// Duplicate start must not need two stops to balance.
+			name: "duplicate start from one hand is idempotent",
+			ops: []map[string]interface{}{
+				{"start-capture": "left"},
+				{"start-capture": "left"},
+				{"stop-capture": "left"},
+			},
+			wantCapturing: false,
+			wantHands:     []string{},
+			wantSequences: 1,
+		},
+		{
+			// Hand B's start failed, so its stop must not end hand A's session.
+			name: "stop from a hand that never started leaves the holder alone",
+			ops: []map[string]interface{}{
+				{"start-capture": "left"},
+				{"stop-capture": "right"},
+			},
+			wantCapturing: true,
+			wantHands:     []string{"left"},
+			wantSequences: 0,
+		},
+		{
+			name: "duplicate stop is idempotent",
+			ops: []map[string]interface{}{
+				{"start-capture": "left"},
+				{"stop-capture": "left"},
+				{"stop-capture": "left"},
+			},
+			wantCapturing: false,
+			wantHands:     []string{},
+			wantSequences: 1,
+		},
+		{
+			name: "stop with no session open is a no-op",
+			ops: []map[string]interface{}{
+				{"stop-capture": "right"},
+			},
+			wantCapturing: false,
+			wantHands:     []string{},
+			wantSequences: 0,
+		},
+		{
+			// The legacy {"start-capture": true} form collapses onto one anonymous owner.
+			name: "legacy bool payload round-trips",
+			ops: []map[string]interface{}{
+				{"start-capture": true},
+				{"stop-capture": true},
+			},
+			wantCapturing: false,
+			wantHands:     []string{},
+			wantSequences: 1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cc, rec := newTestCC(t, nil)
+			for _, op := range tc.ops {
+				do(t, cc, op)
+			}
+
+			if cc.capturing != tc.wantCapturing {
+				t.Errorf("capturing = %v, want %v", cc.capturing, tc.wantCapturing)
+			}
+			if got := hands(t, cc); !equalStrings(got, tc.wantHands) {
+				t.Errorf("active_hands = %v, want %v", got, tc.wantHands)
+			}
+			for i := 0; i < tc.wantSequences; i++ {
+				rec.next(t)
+			}
+			rec.none(t)
+		})
+	}
+}
+
+func TestCaptureControl_ConsecutiveSessionsAreIndependent(t *testing.T) {
+	cc, rec := newTestCC(t, nil)
+
+	do(t, cc, map[string]interface{}{"start-capture": "left"})
+	firstTag := cc.sessionTags[0]
+	do(t, cc, map[string]interface{}{"stop-capture": "left"})
+	first := rec.next(t)
+
+	// The session tag has one-second resolution, so force a distinct stamp.
+	time.Sleep(1100 * time.Millisecond)
+
+	do(t, cc, map[string]interface{}{"start-capture": "left"})
+	if !cc.capturing {
+		t.Fatal("expected a second session to open")
+	}
+	if cc.sessionTags[0] == firstTag {
+		t.Errorf("second session reused the first session's tag %q", firstTag)
+	}
+	do(t, cc, map[string]interface{}{"stop-capture": "left"})
+	second := rec.next(t)
+
+	// The second window must not reach back into the first session.
+	if !second.start.After(first.end) {
+		t.Errorf("second session start %v is not after first session end %v",
+			second.start, first.end)
+	}
+	if second.tags[0] == first.tags[0] {
+		t.Errorf("both sequences carry tag %q", first.tags[0])
+	}
+}
+
+func TestCaptureControl_SessionEndClearsOwners(t *testing.T) {
+	cc, _ := newTestCC(t, nil)
+
+	// Arrange a leaked owner alongside a real one.
+	cc.activeHands["ghost"] = struct{}{}
+	do(t, cc, map[string]interface{}{"start-capture": "left"})
+
+	// Releasing "left" leaves "ghost" in the set, so the session correctly stays
+	// open — that is the guarantee that one hand cannot end another's session.
+	do(t, cc, map[string]interface{}{"stop-capture": "left"})
+	if !cc.capturing {
+		t.Fatal("session ended while an owner was still held")
+	}
+
+	// Releasing the last owner ends the session, and ending it clears the whole
+	// set — so no leaked owner can survive to wedge the next session.
+	do(t, cc, map[string]interface{}{"stop-capture": "ghost"})
+	if cc.capturing {
+		t.Error("expected not capturing after the last owner released")
+	}
+	if got := hands(t, cc); len(got) != 0 {
+		t.Errorf("active_hands = %v after session end, want empty", got)
+	}
+}
