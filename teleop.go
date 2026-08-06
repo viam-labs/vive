@@ -1456,7 +1456,23 @@ func (h *teleopHand) tick(ctx context.Context, cs ControllerState) {
 
 	// Grip: start/stop arm control.
 	if cs.Grip && !h.wasGrip {
-		h.startControl(ctx, cs)
+		if h.startPending.CompareAndSwap(false, true) {
+			// Bump and capture the epoch in one hold, on this thread. Reading it at
+			// goroutine entry instead would let a release land in the spawn gap and
+			// become the goroutine's own baseline, so the staleness check below would
+			// see no change and commit control for an already-released grip.
+			h.stateMu.Lock()
+			h.gripEpoch++
+			epoch := h.gripEpoch
+			h.stateMu.Unlock()
+			h.startControl(ctx, cs, epoch)
+		} else {
+			// A previous start is still dialing. This grip edge is consumed and
+			// wasGrip is about to go true, so the press is inert until the operator
+			// releases and presses again — a distinct single pulse tells them to.
+			h.svc.logger.Debugf("[%s] grip press dropped: start already in flight", h.name)
+			h.sendHaptic(0.9, 60)
+		}
 	} else if !cs.Grip && h.wasGrip {
 		// No isControlling guard: a release must tear down whatever is up, including
 		// a hand that captured but never reached isControlling.
@@ -1475,8 +1491,13 @@ func (h *teleopHand) tick(ctx context.Context, cs ControllerState) {
 	}
 }
 
-func (h *teleopHand) startControl(ctx context.Context, cs ControllerState) {
+func (h *teleopHand) startControl(ctx context.Context, cs ControllerState, epoch uint64) {
+	// Spawn unconditionally. startPending was claimed at the press site but is
+	// released by the defer below, so any early return added ahead of this go
+	// statement would wedge startPending true and disable this hand's grips for
+	// good.
 	go func() {
+		defer h.startPending.Store(false)
 		componentName := h.gripperName
 		if componentName == "" {
 			componentName = h.armName
@@ -1547,7 +1568,9 @@ func (h *teleopHand) startControl(ctx context.Context, cs ControllerState) {
 				h.sendHaptic(0.8, 200)
 				return
 			}
+			h.stateMu.Lock()
 			h.teleopActive = true
+			h.stateMu.Unlock()
 			h.svc.logger.Infof("[%s] teleop_start sent for %s", h.name, compName)
 
 			logName := fmt.Sprintf("teleop_%s_%s.jsonl", h.name, time.Now().Format("20060102_150405"))
@@ -1561,9 +1584,16 @@ func (h *teleopHand) startControl(ctx context.Context, cs ControllerState) {
 
 		if h.svc.captureSensor != nil {
 			if _, err := h.svc.captureSensor.DoCommand(ctx, map[string]interface{}{
-				"start-capture": true,
+				"start-capture": h.name,
 			}); err != nil {
 				h.svc.logger.Warnf("[%s] capture start failed: %v", h.name, err)
+			} else {
+				// Commit immediately, before the epoch check below, so the flag always
+				// reflects the message actually sent — otherwise an abort would leave
+				// this owner in the sensor's set with nothing to release it.
+				h.stateMu.Lock()
+				h.captureActive = true
+				h.stateMu.Unlock()
 			}
 		}
 
@@ -1571,7 +1601,25 @@ func (h *teleopHand) startControl(ctx context.Context, cs ControllerState) {
 		h.lastSentPose = nil
 		h.smoothState = nil
 		h.outlierStreak = 0
-		h.isControlling = true
+
+		h.stateMu.Lock()
+		stale := h.gripEpoch != epoch
+		if !stale {
+			h.isControlling = true
+		}
+		h.stateMu.Unlock()
+
+		if stale {
+			// Released while we were dialing. Tear down what we started rather than
+			// commit control for a grip nobody holds; the claim picks up captureActive
+			// and teleopActive from steps above, so the matching stops do get sent.
+			h.svc.logger.Infof("[%s] grip released during start, aborting", h.name)
+			if c, up := h.claimControl("start aborted"); up {
+				h.stopTeleop(ctx, c)
+			}
+			return
+		}
+
 		h.sendHaptic(0.5, 100)
 		h.svc.logger.Infof("[%s] control started at (%.1f, %.1f, %.1f)", h.name, pt.X, pt.Y, pt.Z)
 	}()
