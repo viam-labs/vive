@@ -80,12 +80,17 @@ type captureControl struct {
 	logger logging.Logger
 	cfg    *CaptureControlConfig
 
+	// sequenceFn creates the cloud sequence for a finished session. Indirected so
+	// tests can observe the window without dialing app.viam.com.
+	sequenceFn func(start, end time.Time, tags []string)
+
 	mu            sync.RWMutex
 	capturing     bool
 	captureFreqHz float64
 	task          string
 	sessionTags   []string
 	sessionStart  time.Time
+	activeHands   map[string]struct{}
 	activeGrips   int
 }
 
@@ -100,12 +105,15 @@ func newCaptureControl(ctx context.Context, deps resource.Dependencies, rawConf 
 		freqHz = 10.0
 	}
 
-	return &captureControl{
+	cc := &captureControl{
 		name:          rawConf.ResourceName(),
 		logger:        logger,
 		cfg:           conf,
 		captureFreqHz: freqHz,
-	}, nil
+		activeHands:   make(map[string]struct{}),
+	}
+	cc.sequenceFn = cc.createSequence
+	return cc, nil
 }
 
 func (cc *captureControl) Name() resource.Name {
@@ -194,7 +202,7 @@ func (cc *captureControl) DoCommand(ctx context.Context, cmd map[string]interfac
 
 		if !cc.cfg.DisableSequences && !start.IsZero() {
 			end := time.Now()
-			go cc.createSequence(start, end, tags)
+			go cc.sequenceFn(start, end, tags)
 		}
 
 		return map[string]interface{}{
