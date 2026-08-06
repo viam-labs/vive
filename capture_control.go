@@ -91,7 +91,8 @@ type captureControl struct {
 	task          string
 	sessionTags   []string
 	sessionStart  time.Time
-	activeHands   map[string]struct{}
+	// activeHands maps each hand currently holding a grip to that grip's generation.
+	activeHands map[string]uint64
 }
 
 func newCaptureControl(ctx context.Context, deps resource.Dependencies, rawConf resource.Config, logger logging.Logger) (sensor.Sensor, error) {
@@ -110,7 +111,7 @@ func newCaptureControl(ctx context.Context, deps resource.Dependencies, rawConf 
 		logger:        logger,
 		cfg:           conf,
 		captureFreqHz: freqHz,
-		activeHands:   make(map[string]struct{}),
+		activeHands:   make(map[string]uint64),
 	}
 	cc.sequenceFn = cc.createSequence
 	return cc, nil
@@ -162,6 +163,34 @@ func handKey(v interface{}) string {
 	return ""
 }
 
+// gripGeneration extracts the grip generation from a start/stop-capture payload.
+// A generation identifies one press-to-release cycle for a hand, so a teardown
+// message delayed past the operator's next grip can be recognized as stale and
+// ignored rather than ending the new session.
+//
+// DoCommand values round-trip through protobuf Structs, so a number can arrive as
+// float64. Callers that omit "grip" — including the legacy payload form — share
+// generation 0.
+func gripGeneration(v interface{}) uint64 {
+	switch n := v.(type) {
+	case uint64:
+		return n
+	case int64:
+		if n > 0 {
+			return uint64(n)
+		}
+	case int:
+		if n > 0 {
+			return uint64(n)
+		}
+	case float64:
+		if n > 0 {
+			return uint64(n)
+		}
+	}
+	return 0
+}
+
 // handNamesLocked returns the current grip owners, sorted for stable output.
 // Read-only, so an RLock is sufficient.
 func (cc *captureControl) handNamesLocked() []string {
@@ -205,7 +234,9 @@ func (cc *captureControl) DoCommand(ctx context.Context, cmd map[string]interfac
 		cc.mu.Lock()
 		defer cc.mu.Unlock()
 
-		cc.activeHands[handKey(v)] = struct{}{}
+		// Recording the generation lets a stale stop for a previous grip be told
+		// apart from the release of the grip currently held.
+		cc.activeHands[handKey(v)] = gripGeneration(cmd["grip"])
 		if !cc.capturing {
 			cc.beginSessionLocked()
 		}
@@ -220,11 +251,23 @@ func (cc *captureControl) DoCommand(ctx context.Context, cmd map[string]interfac
 
 	if v, ok := cmd["stop-capture"]; ok {
 		cc.mu.Lock()
-		delete(cc.activeHands, handKey(v))
+		hand, gen := handKey(v), gripGeneration(cmd["grip"])
+
+		// Release the owner only if this stop belongs to the grip we recorded. A stop
+		// for an owner we never had is a no-op, so one hand can never end another
+		// hand's session; and a stop whose generation has been superseded is a
+		// teardown message that arrived after the operator re-gripped, so honouring
+		// it would end the new session and silently stop capturing mid-demonstration.
+		if cur, held := cc.activeHands[hand]; held {
+			if cur == gen {
+				delete(cc.activeHands, hand)
+			} else {
+				cc.logger.Debugf("ignoring stale stop-capture for %q: generation %d, holding %d",
+					hand, gen, cur)
+			}
+		}
 
 		// Another hand is still driving, or no session was open — leave state alone.
-		// A stop for an owner we never had is a no-op, so one hand can never end
-		// another hand's session.
 		if len(cc.activeHands) > 0 || !cc.capturing {
 			resp := map[string]interface{}{
 				"capturing":    cc.capturing,

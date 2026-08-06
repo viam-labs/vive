@@ -68,7 +68,7 @@ func newTestCC(t *testing.T, cfg *CaptureControlConfig) (*captureControl, *seqRe
 		logger:        logging.NewTestLogger(t),
 		cfg:           cfg,
 		captureFreqHz: 10,
-		activeHands:   make(map[string]struct{}),
+		activeHands:   make(map[string]uint64),
 	}
 	cc.sequenceFn = rec.fn
 	return cc, rec
@@ -278,7 +278,7 @@ func TestCaptureControl_SessionEndClearsOwners(t *testing.T) {
 	cc, _ := newTestCC(t, nil)
 
 	// Arrange a leaked owner alongside a real one.
-	cc.activeHands["ghost"] = struct{}{}
+	cc.activeHands["ghost"] = 0
 	do(t, cc, map[string]interface{}{"start-capture": "left"})
 
 	// Releasing "left" leaves "ghost" in the set, so the session correctly stays
@@ -467,4 +467,83 @@ func TestCaptureControl_ConcurrentGrips(t *testing.T) {
 	if got := hands(t, cc); len(got) != 0 {
 		t.Errorf("active_hands = %v, want empty", got)
 	}
+}
+
+// A hand's teardown runs on its own goroutine, so a stop-capture can be delayed
+// past the operator's next grip. Honouring such a stale stop would end the new
+// session and silently drop the whole second demonstration to
+// capture_frequency_hz: 0, so the generation must be checked.
+func TestCaptureControl_StaleStopIgnoredAfterRegrip(t *testing.T) {
+	cc, rec := newTestCC(t, nil)
+
+	// First grip, generation 1.
+	do(t, cc, map[string]interface{}{"start-capture": "left", "grip": uint64(1)})
+	firstTag := cc.sessionTags[0]
+
+	// Its teardown stalls. Meanwhile the operator re-grips as generation 3 (the
+	// release bumped the hand's epoch, so generations are not consecutive).
+	do(t, cc, map[string]interface{}{"start-capture": "left", "grip": uint64(3)})
+
+	// The stalled teardown finally lands, naming the generation that is gone.
+	do(t, cc, map[string]interface{}{"stop-capture": "left", "grip": uint64(1)})
+
+	if !cc.capturing {
+		t.Fatal("stale stop ended the session that the re-grip owns")
+	}
+	if got := hands(t, cc); !equalStrings(got, []string{"left"}) {
+		t.Errorf("active_hands = %v, want [left] still held", got)
+	}
+	rec.none(t)
+
+	// Releasing the grip actually held does end the session.
+	do(t, cc, map[string]interface{}{"stop-capture": "left", "grip": uint64(3)})
+	if cc.capturing {
+		t.Error("expected not capturing after the held grip released")
+	}
+	got := rec.next(t)
+	if got.tags[0] != firstTag {
+		t.Errorf("sequence tags[0] = %q, want %q (the session was never closed)", got.tags[0], firstTag)
+	}
+}
+
+func TestCaptureControl_GripGeneration(t *testing.T) {
+	tests := []struct {
+		name string
+		in   interface{}
+		want uint64
+	}{
+		{"uint64", uint64(7), 7},
+		{"int", 7, 7},
+		{"int64", int64(7), 7},
+		// DoCommand payloads round-trip through protobuf Structs, which turn every
+		// number into a float64.
+		{"float64 from protobuf", float64(7), 7},
+		{"absent", nil, 0},
+		{"legacy bool payload", true, 0},
+		{"negative is not a generation", -3, 0},
+		{"string is not a generation", "7", 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := gripGeneration(tc.in); got != tc.want {
+				t.Errorf("gripGeneration(%#v) = %d, want %d", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// Callers that omit "grip" — the legacy payload form — all share generation 0, so
+// start and stop still pair up.
+func TestCaptureControl_LegacyPayloadPairsWithoutGeneration(t *testing.T) {
+	cc, rec := newTestCC(t, nil)
+
+	do(t, cc, map[string]interface{}{"start-capture": true})
+	if !cc.capturing {
+		t.Fatal("expected capturing after legacy start")
+	}
+	do(t, cc, map[string]interface{}{"stop-capture": true})
+	if cc.capturing {
+		t.Error("expected not capturing after legacy stop")
+	}
+	rec.next(t)
 }

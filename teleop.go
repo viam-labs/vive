@@ -1600,6 +1600,7 @@ func (h *teleopHand) startControl(ctx context.Context, cs ControllerState, epoch
 		if h.svc.captureSensor != nil {
 			if _, err := h.svc.captureSensor.DoCommand(ctx, map[string]interface{}{
 				"start-capture": h.name,
+				"grip":          epoch,
 			}); err != nil {
 				h.svc.logger.Warnf("[%s] capture start failed: %v", h.name, err)
 			} else {
@@ -1630,6 +1631,10 @@ func (h *teleopHand) startControl(ctx context.Context, cs ControllerState, epoch
 			// and teleopActive from steps above, so the matching stops do get sent.
 			h.svc.logger.Infof("[%s] grip released during start, aborting", h.name)
 			if c, up := h.claimControl("start aborted"); up {
+				// The release already bumped the epoch, so claimControl reports the new
+				// generation. Override it with the one our start-capture was sent under,
+				// or the sensor would reject this stop as stale and leak the owner.
+				c.gripID = epoch
 				h.stopTeleop(ctx, c)
 			}
 			return
@@ -1870,8 +1875,13 @@ func (h *teleopHand) flushLog() {
 }
 
 // controlClaim records what a hand had up at the moment control was claimed, so
-// the teardown can run on another goroutine without reading live state.
-type controlClaim struct{ capture, teleop bool }
+// the teardown can run on another goroutine without reading live state. gripID is
+// the generation of the grip being torn down, which the sensor uses to recognize a
+// stop that arrives after the operator has already re-gripped.
+type controlClaim struct {
+	capture, teleop bool
+	gripID          uint64
+}
 
 // claimControl ends this hand's control state and reports what was up. It always
 // bumps gripEpoch — even when nothing was up — so a startControl goroutine still
@@ -1883,8 +1893,14 @@ type controlClaim struct{ capture, teleop bool }
 // to the arm after the operator let go.
 func (h *teleopHand) claimControl(reason string) (controlClaim, bool) {
 	h.stateMu.Lock()
+	// Read gripID before the bump: it must name the grip being released, which is
+	// the generation the matching start-capture was sent under, not the next one.
+	c := controlClaim{
+		capture: h.captureActive,
+		teleop:  h.teleopActive,
+		gripID:  h.gripEpoch,
+	}
 	h.gripEpoch++
-	c := controlClaim{capture: h.captureActive, teleop: h.teleopActive}
 	wasUp := h.isControlling || h.captureActive || h.teleopActive
 	h.captureActive, h.teleopActive, h.isControlling = false, false, false
 	h.stateMu.Unlock()
@@ -1907,6 +1923,7 @@ func (h *teleopHand) stopTeleop(ctx context.Context, c controlClaim) {
 	if c.capture && h.svc.captureSensor != nil {
 		if _, err := h.svc.captureSensor.DoCommand(ctx, map[string]interface{}{
 			"stop-capture": h.name,
+			"grip":         c.gripID,
 		}); err != nil {
 			h.svc.logger.Warnf("[%s] capture stop failed: %v", h.name, err)
 		}
