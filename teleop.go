@@ -273,6 +273,11 @@ func NewTeleopService(ctx context.Context, deps resource.Dependencies, name reso
 			logger.Warnf("capture control sensor %q not available: %v", conf.CaptureControlSensor, err)
 		} else {
 			svc.captureSensor = capSensor
+			// This sensor resource can outlive a teleop rebuild, leaving grip owners
+			// nothing will ever release and capture wedged on. Clear them once here.
+			if _, err := capSensor.DoCommand(ctx, map[string]interface{}{"reset-capture": true}); err != nil {
+				logger.Warnf("capture reset failed: %v", err)
+			}
 		}
 	}
 
