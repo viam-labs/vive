@@ -155,12 +155,22 @@ type teleopHand struct {
 	lastGripperPos int
 	gripperPosInit bool
 
-	// control state
+	// control state (guarded by stateMu — touched from the control loop, the
+	// startControl goroutine, per-frame teleop_move goroutines, teleopStatusLoop,
+	// and DoCommand handlers)
+	stateMu       sync.Mutex
 	isControlling bool
 	teleopActive  bool
-	errorTimeout  time.Time
-	lastCmdTime   time.Time
-	movePending   atomic.Bool
+	captureActive bool
+	gripEpoch     uint64
+
+	// startPending is deliberately atomic, NOT stateMu-guarded: its CAS runs on the
+	// control-loop thread outside any lock. Do not fold it into the group above.
+	startPending atomic.Bool // one startControl in flight per hand
+
+	errorTimeout time.Time
+	lastCmdTime  time.Time
+	movePending  atomic.Bool
 
 	// session logging
 	logFile   *os.File
@@ -480,10 +490,13 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 	if _, ok := cmd["status"]; ok {
 		status := make([]map[string]interface{}, len(svc.hands))
 		for i, h := range svc.hands {
+			h.stateMu.Lock()
+			controlling, teleopActive := h.isControlling, h.teleopActive
+			h.stateMu.Unlock()
 			status[i] = map[string]interface{}{
 				"name":          h.name,
-				"controlling":   h.isControlling,
-				"teleop_active": h.teleopActive,
+				"controlling":   controlling,
+				"teleop_active": teleopActive,
 			}
 		}
 		return map[string]interface{}{"hands": status}, nil
@@ -651,8 +664,11 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 
 		// Stop any active teleop hands.
 		for _, h := range svc.hands {
-			if h.teleopActive {
-				h.stopTeleop(ctx)
+			// Unconditional: the old h.teleopActive guard missed hands with a nil
+			// motionSvc, and leaving isControlling set made the next grip release
+			// send a second stop-capture for one grip.
+			if c, up := h.claimControl("recalibrate"); up {
+				h.stopTeleop(ctx, c)
 			}
 		}
 
@@ -903,8 +919,8 @@ func (svc *teleopService) Close(ctx context.Context) error {
 	closeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	for _, h := range svc.hands {
-		if h.teleopActive {
-			h.stopTeleop(closeCtx)
+		if c, up := h.claimControl("shutdown"); up {
+			h.stopTeleop(closeCtx, c)
 		}
 	}
 	return nil
@@ -1260,10 +1276,9 @@ func (svc *teleopService) pollLoop(ctx context.Context, hz int) {
 					svc.logger.Warnf("[%s] controller %q stopped returning data (libsurvive running=%v)",
 						h.name, devName, survive.IsRunning())
 					// Clean up teleop state if we were actively controlling.
-					if h.isControlling || h.teleopActive {
+					if c, up := h.claimControl("controller lost"); up {
 						svc.logger.Warnf("[%s] controller lost while controlling -- stopping teleop", h.name)
-						h.isControlling = false
-						go h.stopTeleop(ctx)
+						go h.stopTeleop(ctx, c)
 					}
 					// Clear stale device name and force re-discovery.
 					h.controller.SetDeviceName("")
@@ -1332,7 +1347,10 @@ func (h *teleopHand) teleopStatusLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 		}
-		if !h.teleopActive {
+		h.stateMu.Lock()
+		active := h.teleopActive
+		h.stateMu.Unlock()
+		if !active {
 			continue
 		}
 		resp, err := h.motionSvc.DoCommand(ctx, map[string]interface{}{
@@ -1439,14 +1457,20 @@ func (h *teleopHand) tick(ctx context.Context, cs ControllerState) {
 	// Grip: start/stop arm control.
 	if cs.Grip && !h.wasGrip {
 		h.startControl(ctx, cs)
-	} else if !cs.Grip && h.wasGrip && h.isControlling {
-		h.isControlling = false
-		h.sendHaptic(0.3, 80)
-		go h.stopTeleop(ctx)
+	} else if !cs.Grip && h.wasGrip {
+		// No isControlling guard: a release must tear down whatever is up, including
+		// a hand that captured but never reached isControlling.
+		if c, up := h.claimControl("grip released"); up {
+			h.sendHaptic(0.3, 80)
+			go h.stopTeleop(ctx, c)
+		}
 	}
 	h.wasGrip = cs.Grip
 
-	if h.isControlling {
+	h.stateMu.Lock()
+	controlling := h.isControlling
+	h.stateMu.Unlock()
+	if controlling {
 		h.controlFrame(ctx, cs)
 	}
 }
@@ -1648,7 +1672,10 @@ func (h *teleopHand) controlFrame(ctx context.Context, cs ControllerState) {
 
 	h.lastCmdTime = now
 
-	if h.motionSvc != nil && h.teleopActive {
+	h.stateMu.Lock()
+	teleopUp := h.teleopActive
+	h.stateMu.Unlock()
+	if h.motionSvc != nil && teleopUp {
 		moveReq := fmt.Sprintf(
 			`{"reference_frame":"world","pose":{"x":%f,"y":%f,"z":%f,"o_x":%f,"o_y":%f,"o_z":%f,"theta":%f}}`,
 			candidate.X, candidate.Y, candidate.Z, candidate.OX, candidate.OY, candidate.OZ, candidate.ThetaDeg,
@@ -1712,9 +1739,16 @@ func (h *teleopHand) controlFrame(ctx context.Context, cs ControllerState) {
 				h.errorTimeout = time.Now().Add(errorCooldown)
 				h.sendHaptic(0.3, 100)
 				if strings.Contains(err.Error(), "not running") {
+					// The motion service session is provably gone, so clear teleopActive
+					// first and let the claim report teleop:false — no teleop_stop. The
+					// claim is what sends the matching stop-capture; without it this path
+					// left the owner set wedged for the module's lifetime.
+					h.stateMu.Lock()
 					h.teleopActive = false
-					h.isControlling = false
-					h.svc.logger.Warnf("[%s] teleop session lost, releasing control", h.name)
+					h.stateMu.Unlock()
+					if c, up := h.claimControl("teleop session lost"); up {
+						go h.stopTeleop(ctx, c)
+					}
 				}
 			} else {
 				grpcDur := time.Since(sendStart)
@@ -1772,15 +1806,49 @@ func (h *teleopHand) flushLog() {
 	h.logMu.Unlock()
 }
 
-func (h *teleopHand) stopTeleop(ctx context.Context) {
-	if h.svc.captureSensor != nil {
+// controlClaim records what a hand had up at the moment control was claimed, so
+// the teardown can run on another goroutine without reading live state.
+type controlClaim struct{ capture, teleop bool }
+
+// claimControl ends this hand's control state and reports what was up. It always
+// bumps gripEpoch — even when nothing was up — so a startControl goroutine still
+// in flight sees the release and aborts.
+//
+// This runs on the CALLER's goroutine and the flags are clear before it returns.
+// That is deliberate: the control loop checks isControlling immediately after the
+// grip-release branch, so deferring the clear would keep sending controller motion
+// to the arm after the operator let go.
+func (h *teleopHand) claimControl(reason string) (controlClaim, bool) {
+	h.stateMu.Lock()
+	h.gripEpoch++
+	c := controlClaim{capture: h.captureActive, teleop: h.teleopActive}
+	wasUp := h.isControlling || h.captureActive || h.teleopActive
+	h.captureActive, h.teleopActive, h.isControlling = false, false, false
+	h.stateMu.Unlock()
+
+	if wasUp {
+		h.svc.logger.Infof("[%s] releasing control: %s", h.name, reason)
+	}
+	return c, wasUp
+}
+
+// stopTeleop performs the gRPC and log-file teardown for a claim. It touches none
+// of the control flags — claimControl already cleared them — and must never be
+// called with stateMu held.
+//
+// Callers invoke this only when claimControl reported wasUp, which also gates the
+// log-file teardown below. That is safe because logFile is created immediately
+// after teleopActive is set, so a non-nil logFile always implies a non-empty
+// claim. Preserve that coupling or the file handle can be orphaned.
+func (h *teleopHand) stopTeleop(ctx context.Context, c controlClaim) {
+	if c.capture && h.svc.captureSensor != nil {
 		if _, err := h.svc.captureSensor.DoCommand(ctx, map[string]interface{}{
-			"stop-capture": true,
+			"stop-capture": h.name,
 		}); err != nil {
 			h.svc.logger.Warnf("[%s] capture stop failed: %v", h.name, err)
 		}
 	}
-	if h.motionSvc != nil && h.teleopActive {
+	if c.teleop && h.motionSvc != nil {
 		if _, err := h.motionSvc.DoCommand(ctx, map[string]interface{}{
 			"teleop_stop":    true,
 			"component_name": h.teleopComponentName(),
@@ -1789,7 +1857,6 @@ func (h *teleopHand) stopTeleop(ctx context.Context) {
 		} else {
 			h.svc.logger.Infof("[%s] teleop_stop sent", h.name)
 		}
-		h.teleopActive = false
 	}
 	if h.logFile != nil {
 		h.logMu.Lock()
