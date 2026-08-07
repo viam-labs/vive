@@ -209,3 +209,45 @@ func changedPosePaths(a, b *commonpb.Pose) []string {
 	}
 	return paths
 }
+
+// applyCommitted advances the delivered-state map by only the changes that were
+// actually enqueued.
+//
+// This is what makes drop-on-full safe. Dropping is harmless for UPDATED — the
+// next diff regenerates against the current value — but ADDED and REMOVED are
+// terminal: because diffTransforms compares consecutive maps, a dropped REMOVED
+// would leave the frame absent from both prev and next on every later tick and so
+// never be re-emitted, stranding the commanded box in the scene forever after the
+// operator releases the grip. Advancing conditionally makes a dropped change
+// pending rather than lost, and it self-heals on the next tick.
+//
+// It takes next as well as prev because an UPDATED change carries only a partial
+// transform — storing c.Transform directly would corrupt the delivered-state map
+// with a payload that has no geometry or parent frame. The full value is looked
+// up in next instead.
+func applyCommitted(
+	prev, next map[string]*commonpb.Transform,
+	changes []worldstatestore.TransformChange,
+	sent []bool,
+) map[string]*commonpb.Transform {
+	out := make(map[string]*commonpb.Transform, len(prev))
+	for k, v := range prev {
+		out[k] = v
+	}
+	for i, c := range changes {
+		if i >= len(sent) || !sent[i] {
+			continue
+		}
+		name := string(c.Transform.Uuid)
+		switch c.ChangeType {
+		case pb.TransformChangeType_TRANSFORM_CHANGE_TYPE_REMOVED:
+			delete(out, name)
+		default:
+			// ADDED and UPDATED both mean "the consumer now has the current value".
+			if full, ok := next[name]; ok {
+				out[name] = full
+			}
+		}
+	}
+	return out
+}

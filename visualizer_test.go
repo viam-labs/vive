@@ -364,3 +364,63 @@ func TestDiffTransforms(t *testing.T) {
 		}
 	})
 }
+
+func allSent(n int) []bool {
+	s := make([]bool, n)
+	for i := range s {
+		s[i] = true
+	}
+	return s
+}
+
+func TestApplyCommitted_DroppedTerminalChangeIsRetried(t *testing.T) {
+	now := time.Unix(1000, 0)
+	gripping := VisualState{ComposedCalib: mgl64.Ident4(), Hands: []HandVisual{liveHand("left", now)}}
+	gripping.Hands[0].Controlling = true
+	gripping.Hands[0].Commanded = &Pose{X: 10}
+
+	gripped := buildTransforms(gripping, testCfg(), now)
+	idle := buildTransforms(
+		VisualState{ComposedCalib: mgl64.Ident4(), Hands: []HandVisual{liveHand("left", now)}},
+		testCfg(), now,
+	)
+
+	// Deliver everything so prev == gripped.
+	prev := applyCommitted(nil, gripped, diffTransforms(nil, gripped), allSent(len(gripped)))
+
+	// The operator releases, but the REMOVED is dropped because the consumer is slow.
+	changes := diffTransforms(prev, idle)
+	c, ok := changeFor(changes, "vive-left-commanded")
+	if !ok || c.ChangeType != pb.TransformChangeType_TRANSFORM_CHANGE_TYPE_REMOVED {
+		t.Fatal("expected a REMOVED for the commanded box")
+	}
+	sent := make([]bool, len(changes))
+	for i, ch := range changes {
+		sent[i] = string(ch.Transform.Uuid) != "vive-left-commanded" // this one dropped
+	}
+	prev = applyCommitted(prev, idle, changes, sent)
+
+	// Because prev did not advance for the dropped change, the next tick re-emits it.
+	// Advancing prev wholesale would leave the box in the app's scene forever.
+	again := diffTransforms(prev, idle)
+	c2, ok := changeFor(again, "vive-left-commanded")
+	if !ok {
+		t.Fatal("dropped REMOVED was never re-emitted — geometry is stranded")
+	}
+	if c2.ChangeType != pb.TransformChangeType_TRANSFORM_CHANGE_TYPE_REMOVED {
+		t.Errorf("re-emitted type = %v, want REMOVED", c2.ChangeType)
+	}
+}
+
+func TestApplyCommitted_DeliveredChangesAdvance(t *testing.T) {
+	now := time.Unix(1000, 0)
+	idle := buildTransforms(
+		VisualState{ComposedCalib: mgl64.Ident4(), Hands: []HandVisual{liveHand("left", now)}},
+		testCfg(), now,
+	)
+
+	prev := applyCommitted(nil, idle, diffTransforms(nil, idle), allSent(len(idle)))
+	if changes := diffTransforms(prev, idle); len(changes) != 0 {
+		t.Errorf("fully delivered state still reports %d changes", len(changes))
+	}
+}
