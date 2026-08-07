@@ -1,11 +1,14 @@
 package vive
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/go-gl/mathgl/mgl64"
 	"github.com/golang/geo/r3"
 	commonpb "go.viam.com/api/common/v1"
+	pb "go.viam.com/api/service/worldstatestore/v1"
+	"go.viam.com/rdk/services/worldstatestore"
 	"go.viam.com/rdk/spatialmath"
 	"gonum.org/v1/gonum/num/quat"
 )
@@ -143,4 +146,66 @@ func sphereGeometry(radiusMM float64, label string) *commonpb.Geometry {
 		},
 		Label: label,
 	}
+}
+
+// diffTransforms produces the change list that takes a consumer from prev to next.
+//
+// ADDED and REMOVED carry the full transform and no field mask. UPDATED carries a
+// partial transform — UUID plus only the changed fields — with lowerCamelCase
+// dotted field paths, matching the RDK fake, which is the form the spike proved
+// the app animates.
+func diffTransforms(prev, next map[string]*commonpb.Transform) []worldstatestore.TransformChange {
+	var out []worldstatestore.TransformChange
+
+	for name, n := range next {
+		p, existed := prev[name]
+		if !existed {
+			out = append(out, worldstatestore.TransformChange{
+				ChangeType: pb.TransformChangeType_TRANSFORM_CHANGE_TYPE_ADDED,
+				Transform:  n,
+			})
+			continue
+		}
+		if paths := changedPosePaths(p.PoseInObserverFrame.Pose, n.PoseInObserverFrame.Pose); len(paths) > 0 {
+			out = append(out, worldstatestore.TransformChange{
+				ChangeType: pb.TransformChangeType_TRANSFORM_CHANGE_TYPE_UPDATED,
+				Transform: &commonpb.Transform{
+					Uuid: n.Uuid,
+					PoseInObserverFrame: &commonpb.PoseInFrame{
+						Pose: n.PoseInObserverFrame.Pose,
+					},
+				},
+				UpdatedFields: paths,
+			})
+		}
+	}
+
+	for name, p := range prev {
+		if _, still := next[name]; !still {
+			out = append(out, worldstatestore.TransformChange{
+				ChangeType: pb.TransformChangeType_TRANSFORM_CHANGE_TYPE_REMOVED,
+				Transform:  p,
+			})
+		}
+	}
+	return out
+}
+
+// changedPosePaths lists the field-mask paths whose values differ. Geometry and
+// parentage never change for a given frame, so only the pose is compared.
+func changedPosePaths(a, b *commonpb.Pose) []string {
+	var paths []string
+	for _, f := range []struct {
+		name string
+		a, b float64
+	}{
+		{"x", a.X, b.X}, {"y", a.Y, b.Y}, {"z", a.Z, b.Z},
+		{"oX", a.OX, b.OX}, {"oY", a.OY, b.OY}, {"oZ", a.OZ, b.OZ},
+		{"theta", a.Theta, b.Theta},
+	} {
+		if f.a != f.b {
+			paths = append(paths, fmt.Sprintf("poseInObserverFrame.pose.%s", f.name))
+		}
+	}
+	return paths
 }

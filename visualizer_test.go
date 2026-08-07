@@ -2,12 +2,16 @@ package vive
 
 import (
 	"math"
+	"slices"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-gl/mathgl/mgl64"
 	commonpb "go.viam.com/api/common/v1"
+	pb "go.viam.com/api/service/worldstatestore/v1"
+	"go.viam.com/rdk/services/worldstatestore"
 )
 
 func testCfg() VisualizerConfig {
@@ -258,4 +262,105 @@ func TestBuildTransforms_LighthouseBoxLegibleWithoutColour(t *testing.T) {
 	if !(d.X > d.Y && d.Y > d.Z) {
 		t.Errorf("lighthouse dims (%v,%v,%v) are not strictly ordered X>Y>Z", d.X, d.Y, d.Z)
 	}
+}
+
+func changeFor(changes []worldstatestore.TransformChange, uuid string) (worldstatestore.TransformChange, bool) {
+	for _, c := range changes {
+		if string(c.Transform.Uuid) == uuid {
+			return c, true
+		}
+	}
+	return worldstatestore.TransformChange{}, false
+}
+
+func TestDiffTransforms(t *testing.T) {
+	now := time.Unix(1000, 0)
+	base := VisualState{ComposedCalib: mgl64.Ident4(), Hands: []HandVisual{liveHand("left", now)}}
+	idle := buildTransforms(base, testCfg(), now)
+
+	// Clone: VisualState.Hands is a slice, so assigning the struct aliases the
+	// backing array and later fixtures would mutate `base` out from under the
+	// earlier subtests.
+	gripping := base
+	gripping.Hands = slices.Clone(base.Hands)
+	gripping.Hands[0].Controlling = true
+	gripping.Hands[0].Commanded = &Pose{X: 10}
+	gripped := buildTransforms(gripping, testCfg(), now)
+
+	t.Run("first build adds everything", func(t *testing.T) {
+		changes := diffTransforms(nil, idle)
+		if len(changes) != len(idle) {
+			t.Fatalf("got %d changes, want %d", len(changes), len(idle))
+		}
+		for _, c := range changes {
+			if c.ChangeType != pb.TransformChangeType_TRANSFORM_CHANGE_TYPE_ADDED {
+				t.Errorf("%s: type = %v, want ADDED", c.Transform.Uuid, c.ChangeType)
+			}
+			// ADDED carries the full transform, so the app can create the object.
+			if c.Transform.ReferenceFrame == "" || c.Transform.PhysicalObject == nil {
+				t.Errorf("%s: ADDED must carry a full transform", c.Transform.Uuid)
+			}
+			if len(c.UpdatedFields) != 0 {
+				t.Errorf("%s: ADDED must not carry a field mask", c.Transform.Uuid)
+			}
+		}
+	})
+
+	t.Run("no change produces nothing", func(t *testing.T) {
+		if changes := diffTransforms(idle, idle); len(changes) != 0 {
+			t.Errorf("idle module is not silent: %d changes", len(changes))
+		}
+	})
+
+	t.Run("grip adds the commanded box", func(t *testing.T) {
+		changes := diffTransforms(idle, gripped)
+		c, ok := changeFor(changes, "vive-left-commanded")
+		if !ok {
+			t.Fatal("no change for the commanded box")
+		}
+		if c.ChangeType != pb.TransformChangeType_TRANSFORM_CHANGE_TYPE_ADDED {
+			t.Errorf("type = %v, want ADDED", c.ChangeType)
+		}
+	})
+
+	t.Run("release removes the commanded box", func(t *testing.T) {
+		changes := diffTransforms(gripped, idle)
+		c, ok := changeFor(changes, "vive-left-commanded")
+		if !ok {
+			t.Fatal("no change for the commanded box")
+		}
+		if c.ChangeType != pb.TransformChangeType_TRANSFORM_CHANGE_TYPE_REMOVED {
+			t.Errorf("type = %v, want REMOVED", c.ChangeType)
+		}
+	})
+
+	t.Run("moved pose produces a partial UPDATED", func(t *testing.T) {
+		moved := base
+		moved.Hands = slices.Clone(base.Hands)
+		moved.Hands[0].ControllerPos = [3]float64{9, 2, 3} // X only
+		next := buildTransforms(moved, testCfg(), now)
+
+		changes := diffTransforms(idle, next)
+		c, ok := changeFor(changes, "vive-left-controller")
+		if !ok {
+			t.Fatal("no change for the controller")
+		}
+		if c.ChangeType != pb.TransformChangeType_TRANSFORM_CHANGE_TYPE_UPDATED {
+			t.Fatalf("type = %v, want UPDATED", c.ChangeType)
+		}
+		// Partial payload, matching the RDK fake: UUID plus changed fields only.
+		if c.Transform.PhysicalObject != nil {
+			t.Error("UPDATED must not resend the geometry")
+		}
+		if len(c.UpdatedFields) == 0 {
+			t.Fatal("UPDATED must carry a field mask")
+		}
+		// lowerCamelCase dotted paths, matching the fake — the only form the spike
+		// proved the app animates.
+		for _, p := range c.UpdatedFields {
+			if !strings.HasPrefix(p, "poseInObserverFrame.") {
+				t.Errorf("field path %q is not a lowerCamelCase dotted path", p)
+			}
+		}
+	})
 }
