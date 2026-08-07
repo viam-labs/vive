@@ -109,6 +109,10 @@ type teleopService struct {
 	// frameChecked tracks whether pollLoop has verified base station frame orientation.
 	frameChecked atomic.Bool
 
+	// closed is set by Close so a visualizer holding a stale handle across an
+	// AlwaysRebuild can detect that this instance is dead.
+	closed atomic.Bool
+
 	// surviveMu guards libsurvive access during recalibration/pairing to prevent
 	// the poll loop from calling into a destroyed context.
 	surviveMu sync.Mutex
@@ -140,6 +144,11 @@ type teleopHand struct {
 	firstDataLog bool // true after first successful tracking data logged
 	absoluteRot  bool
 	armFrameMat  mgl64.Mat4
+
+	// visual is the latest snapshot for the world-state visualizer. Written only
+	// by the poll goroutine via publishVisual/publishDisconnected; read by the
+	// visualizer service. Never mutate a published value — store a new one.
+	visual atomic.Pointer[HandVisual]
 
 	// button edge state
 	wasGrip     bool
@@ -897,6 +906,7 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 }
 
 func (svc *teleopService) Close(ctx context.Context) error {
+	svc.closed.Store(true)
 	svc.cancelFunc()
 	// Use a short timeout so remote DoCommand calls in stopTeleop don't block
 	// server shutdown when the resources are already disconnected.
@@ -1270,6 +1280,9 @@ func (svc *teleopService) pollLoop(ctx context.Context, hz int) {
 					svc.controllersAssigned = false
 					lastScan = time.Time{}
 				}
+				// tick is skipped entirely on nil state, so publish here or the
+				// snapshot goes stale silently.
+				h.publishDisconnected()
 				continue
 			}
 			if h.lastStateWasNil {
@@ -1413,6 +1426,10 @@ func (h *teleopHand) tick(ctx context.Context, cs ControllerState) {
 	}
 
 	if !cs.Connected {
+		// Publish before returning: otherwise a controller that stops reporting
+		// leaves its last good snapshot in place with Connected: true forever, and
+		// the app shows a sphere frozen at the last known pose.
+		h.publishVisual(cs)
 		return
 	}
 
@@ -1449,6 +1466,10 @@ func (h *teleopHand) tick(ctx context.Context, cs ControllerState) {
 	if h.isControlling {
 		h.controlFrame(ctx, cs)
 	}
+
+	// After controlFrame, because h.lastSentPose is written there — publishing
+	// only at the top would leave Commanded perpetually one tick stale.
+	h.publishVisual(cs)
 }
 
 func (h *teleopHand) startControl(ctx context.Context, cs ControllerState) {
