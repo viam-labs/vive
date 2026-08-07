@@ -71,6 +71,8 @@ type visualizer struct {
 	mu      sync.RWMutex
 	current map[string]*commonpb.Transform // last built state: current truth
 	changes chan worldstatestore.TransformChange
+	closed  bool // set by Close; stops a later stream starting an orphan publisher
+	reseed  bool // set when a stream opens; makes run() re-ADD everything
 }
 
 func newVisualizer(
@@ -162,6 +164,7 @@ func (v *visualizer) Close(ctx context.Context) error {
 	// read must be guarded. Release the lock before waiting, or run() cannot take
 	// it to update v.current and Close deadlocks.
 	v.mu.Lock()
+	v.closed = true
 	cancel, done := v.cancel, v.done
 	v.mu.Unlock()
 
@@ -180,12 +183,29 @@ func (v *visualizer) StreamTransformChanges(
 	ctx context.Context, extra map[string]any,
 ) (*worldstatestore.TransformChangeStream, error) {
 	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	// Close may already have run: viam-server closes resources on reconfigure
+	// while gRPC handlers are still in flight. Without this check, a stream
+	// arriving just after Close would start a publisher on a context nothing can
+	// cancel, leaking a goroutine that polls a dead teleop service forever.
+	if v.closed {
+		return nil, fmt.Errorf("%s: visualizer is closed", v.name)
+	}
+
+	// Re-send everything to this subscriber. `delivered` is per-resource, not
+	// per-stream, so a viewer that reopens the scene would otherwise receive
+	// nothing: its objects are already in `delivered`, and a stationary frame like
+	// vive-lighthouse emits no UPDATED either, leaving the scene empty. Relying on
+	// the client to seed itself via ListUUIDs/GetTransform is an unverified
+	// assumption about the app, and the cost of being wrong is a blank scene.
+	v.reseed = true
+
 	if v.cancel == nil {
 		runCtx, cancel := context.WithCancel(context.Background())
 		v.cancel = cancel
 		go v.run(runCtx)
 	}
-	v.mu.Unlock()
 
 	return worldstatestore.NewTransformChangeStreamFromChannel(ctx, v.changes), nil
 }
@@ -219,6 +239,12 @@ func (v *visualizer) run(ctx context.Context) {
 
 		v.mu.Lock()
 		v.current = next
+		if v.reseed {
+			// A new subscriber arrived. Forget what the previous one had so every
+			// object is re-ADDED for this one.
+			v.reseed = false
+			delivered = map[string]*commonpb.Transform{}
+		}
 		v.mu.Unlock()
 
 		changes := diffTransforms(delivered, next)

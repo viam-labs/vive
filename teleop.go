@@ -62,7 +62,19 @@ func (cfg *TeleopConfig) Validate(path string) ([]string, []string, error) {
 		return nil, nil, fmt.Errorf("%s: at least one hand must be configured", path)
 	}
 	var deps []string
+	seenNames := make(map[string]struct{}, len(cfg.Hands))
 	for _, h := range cfg.Hands {
+		// Visualizer frame names are derived from the hand name, so two unnamed or
+		// duplicately-named hands collide on one key and only the last renders —
+		// a failure indistinguishable from "tracking is dead", which is exactly
+		// what the visualizer exists to disambiguate.
+		if h.Name == "" {
+			return nil, nil, fmt.Errorf("%s: every hand must have a name", path)
+		}
+		if _, dup := seenNames[h.Name]; dup {
+			return nil, nil, fmt.Errorf("%s: duplicate hand name %q", path, h.Name)
+		}
+		seenNames[h.Name] = struct{}{}
 		if h.Controller == "" {
 			return nil, nil, fmt.Errorf("%s: hand %q must have a controller", path, h.Name)
 		}

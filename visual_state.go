@@ -47,8 +47,12 @@ func (h *teleopHand) publishVisual(cs ControllerState) {
 		ControllerPos: cs.Pos,
 		ControllerMat: cs.Mat,
 	}
-	if h.isControlling && h.lastSentPose != nil {
-		p := *h.lastSentPose // copy: the control loop keeps mutating the original
+	// Snapshot the pointer once before testing it. startControl's goroutine sets
+	// h.lastSentPose = nil while this runs on the poll goroutine, so a separate
+	// check and dereference could reload the field in between and panic on a grip
+	// that begins on exactly this tick.
+	if last := h.lastSentPose; h.isControlling && last != nil {
+		p := *last // copy: the control loop keeps mutating the original
 		v.Commanded = &p
 	}
 	h.visual.Store(v)
