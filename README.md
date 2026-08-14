@@ -262,62 +262,23 @@ Wire it into the teleop service by adding `capture_control_sensor` to the teleop
 ```jsonc
 {
   "hands": [...],
-  "capture_control_sensor": "capture-ctrl"
+  "capture_control_sensor": "capture-ctrl" // the name of your capture-control sensor component
 }
 ```
 
 ### Data Manager Setup
 
-The target resources (arm, cameras) must have data capture configured — even if initially disabled with `capture_frequency_hz: 0`. The capture-control sensor overrides the frequency at runtime.
-
-**Arm:**
-```json
-{
-  "name": "right-arm",
-  "service_configs": [
-    {
-      "type": "data_manager",
-      "attributes": {
-        "capture_methods": [
-          {"method": "EndPosition", "capture_frequency_hz": 0}
-        ]
-      }
-    }
-  ]
-}
-```
-
-**Camera (repeat for each):**
-```json
-{
-  "name": "wrist-cam",
-  "service_configs": [
-    {
-      "type": "data_manager",
-      "attributes": {
-        "capture_methods": [
-          {"method": "GetImages", "capture_frequency_hz": 0}
-        ]
-      }
-    }
-  ]
-}
-```
+The robot will need to have a data manager configured using the JSON view for that resource to set the `capture_control_sensor` field. The capture-control sensor overrides the data capture values and frequency at runtime.
 
 **Data manager service:**
 ```json
 {
-  "name": "data_manager-1",
-  "api": "rdk:service:data_manager",
-  "model": "rdk:builtin:builtin",
-  "attributes": {
-    "capture_control_sensor": {
-      "name": "capture-ctrl",
-      "key": "overrides"
-    },
-    "sync_interval_mins": 0.1,
-    "sync_disabled": false
-  }
+  "capture_control_sensor": {
+    "name": "capture-ctrl", // the name of your capture-control sensor component
+    "key": "overrides"
+  },
+  "sync_interval_mins": 0.1,
+  "sync_disabled": false
 }
 ```
 
