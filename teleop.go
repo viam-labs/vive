@@ -41,6 +41,8 @@ type HandConfig struct {
 	Controller      string  `json:"controller"`
 	Arm             string  `json:"arm"`
 	Gripper         string  `json:"gripper,omitempty"`
+	GripperType     string  `json:"gripper_type,omitempty"`     // "proportional" (default) | "vacuum"
+	VacuumThreshold float64 `json:"vacuum_threshold,omitempty"` // trigger fraction to engage vacuum; default 0.5
 	Scale           float64 `json:"scale,omitempty"`
 	RotationEnabled *bool   `json:"rotation_enabled,omitempty"`
 	PosDeadzoneMM   float64 `json:"pos_deadzone_mm,omitempty"`
@@ -68,6 +70,15 @@ func (cfg *TeleopConfig) Validate(path string) ([]string, []string, error) {
 		}
 		if h.Arm == "" {
 			return nil, nil, fmt.Errorf("%s: hand %q must have an arm", path, h.Name)
+		}
+		switch h.GripperType {
+		case "", "proportional", "vacuum":
+		default:
+			return nil, nil, fmt.Errorf("%s: hand %q has invalid gripper_type %q (want \"proportional\" or \"vacuum\")", path, h.Name, h.GripperType)
+		}
+		if h.VacuumThreshold != 0 && (h.VacuumThreshold <= vacuumHysteresisBand || h.VacuumThreshold >= 1-vacuumHysteresisBand) {
+			return nil, nil, fmt.Errorf("%s: hand %q vacuum_threshold %v must be 0 (default) or in (%v, %v) to leave room for the hysteresis band",
+				path, h.Name, h.VacuumThreshold, vacuumHysteresisBand, 1-vacuumHysteresisBand)
 		}
 		deps = append(deps, h.Controller, h.Arm)
 		if h.Gripper != "" {
@@ -154,6 +165,12 @@ type teleopHand struct {
 	gripperNotify  chan struct{}
 	lastGripperPos int
 	gripperPosInit bool
+
+	// gripper vacuum control
+	gripperType     string
+	vacuumThreshold float64
+	vacuumOn        bool        // last committed on/off state (drives hysteresis hold)
+	vacuumDesired   atomic.Bool // handed to the vacuum loop
 
 	// control state
 	isControlling bool
@@ -298,6 +315,15 @@ func NewTeleopService(ctx context.Context, deps resource.Dependencies, name reso
 			}
 		}
 
+		gripperType := hc.GripperType
+		if gripperType == "" {
+			gripperType = "proportional"
+		}
+		vacuumThreshold := hc.VacuumThreshold
+		if vacuumThreshold <= 0 {
+			vacuumThreshold = 0.5
+		}
+
 		scale := hc.Scale
 		if scale <= 0 {
 			scale = 1.0
@@ -334,6 +360,8 @@ func NewTeleopService(ctx context.Context, deps resource.Dependencies, name reso
 			motionSvc:       motionSvc,
 			armName:         hc.Arm,
 			gripperName:     hc.Gripper,
+			gripperType:     gripperType,
+			vacuumThreshold: vacuumThreshold,
 			scale:           scale,
 			rotEnabled:      rotEnabled,
 			absoluteRot:     true,
@@ -1369,6 +1397,10 @@ func (h *teleopHand) teleopStatusLoop(ctx context.Context) {
 }
 
 func (h *teleopHand) gripperLoop(ctx context.Context) {
+	if h.gripperType == "vacuum" {
+		h.vacuumLoop(ctx)
+		return
+	}
 	lastSent := int64(-1)
 	for {
 		select {
@@ -1388,9 +1420,49 @@ func (h *teleopHand) gripperLoop(ctx context.Context) {
 	}
 }
 
+func (h *teleopHand) vacuumLoop(ctx context.Context) {
+	lastSent := false
+	inited := false
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-h.gripperNotify:
+		}
+		on := h.vacuumDesired.Load()
+		if inited && on == lastSent {
+			continue
+		}
+		inited = true
+		lastSent = on
+		if on {
+			grabbed, err := h.gripper.Grab(ctx, nil)
+			if err != nil {
+				h.svc.logger.Warnf("[%s] vacuum grab: %v", h.name, err)
+			} else if !grabbed {
+				h.svc.logger.Debugf("[%s] vacuum grab reported no object held", h.name)
+			}
+		} else if err := h.gripper.Open(ctx, nil); err != nil {
+			h.svc.logger.Warnf("[%s] vacuum open: %v", h.name, err)
+		}
+	}
+}
+
 func (h *teleopHand) tick(ctx context.Context, cs ControllerState) {
-	// Gripper: trigger → proportional position.
-	if h.gripper != nil {
+	// Gripper: trigger drives the gripper. Runs regardless of arm-control state
+	// so suction/grip is decoupled from the grip button.
+	if h.gripper != nil && h.gripperType == "vacuum" {
+		on := vacuumEngaged(cs.Trigger, h.vacuumThreshold, vacuumHysteresisBand, h.vacuumOn)
+		if on != h.vacuumOn {
+			h.vacuumOn = on
+			h.vacuumDesired.Store(on)
+			h.sendHaptic(0.3, 60) // brief confirm on engage/release
+			select {
+			case h.gripperNotify <- struct{}{}:
+			default:
+			}
+		}
+	} else if h.gripper != nil {
 		pos := 830 - int(cs.Trigger*820)
 		if pos < 10 {
 			pos = 10
