@@ -1,0 +1,35 @@
+# Builds the module on pull requests inside the image cloud build uses, without
+# publishing anything. The tag-triggered deploy workflow is the only path to the registry.
+name: Build
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runs-on: ubuntu-latest
+          - arch: arm64
+            runs-on: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runs-on }}
+    steps:
+      # actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Build module.tar.gz in cloud-build-base (${{ matrix.arch }}-focal)
+        env:
+          IMAGE: ghcr.io/viamrobotics/cloud-build-base:${{ matrix.arch }}-focal
+        run: |
+          docker pull --quiet "$IMAGE"
+          docker run --rm -v "$PWD:/build" -w /build "$IMAGE" bash -euo pipefail -c '
+            git config --global --add safe.directory /build
+            make setup
+            make module.tar.gz
+          '
+          ls -l module.tar.gz
