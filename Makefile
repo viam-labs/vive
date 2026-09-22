@@ -92,9 +92,9 @@ test:
 
 setup:
 ifeq ($(shell uname -s),Darwin)
-	brew install cmake libusb hidapi zlib
+	brew install cmake libusb hidapi zlib eigen
 else
-	sudo apt-get install -y cmake libusb-1.0-0-dev zlib1g-dev
+	sudo apt-get install -y cmake libusb-1.0-0-dev zlib1g-dev libeigen3-dev
 endif
 	go mod tidy
 
