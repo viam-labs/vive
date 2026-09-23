@@ -235,10 +235,11 @@ func NewTeleopService(ctx context.Context, deps resource.Dependencies, name reso
 	cancelCtx, cancelFunc := context.WithCancel(context.Background())
 
 	// Compute plugin path for potential libsurvive auto-restart.
-	exePathForPlugin, _ := os.Executable()
-	pluginLib := filepath.Join(filepath.Dir(exePathForPlugin), "libsurvive", "lib", "libsurvive.so")
-	if _, statErr := os.Stat(pluginLib); statErr != nil {
-		pluginLib = filepath.Join(filepath.Dir(exePathForPlugin), "libsurvive", "lib", "libsurvive.dylib")
+	pluginLib := ""
+	if lsDir, err := bundledLibsurvive(); err == nil {
+		pluginLib = pluginLibPath(lsDir)
+	} else {
+		logger.Warnf("bundled libsurvive not found, relying on default plugin search: %v", err)
 	}
 
 	svc := &teleopService{
@@ -441,8 +442,8 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 		}
 		return map[string]interface{}{
 			"lighthouse_variances": lhVars,
-			"max_variance":        maxVar,
-			"converged":           maxVar > 0 && maxVar < 0.001,
+			"max_variance":         maxVar,
+			"converged":            maxVar > 0 && maxVar < 0.001,
 		}, nil
 	}
 
@@ -470,10 +471,10 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 		disagreementOK := maxDisagreement >= 0 && maxDisagreement < 2.0
 		return map[string]interface{}{
 			"lighthouse_variances":       lhVars,
-			"max_variance":              maxVar,
+			"max_variance":               maxVar,
 			"lighthouse_disagreement_mm": maxDisagreement,
-			"converged":                 varianceOK && disagreementOK,
-			"active_lighthouses":        survive.ActiveLighthouses(),
+			"converged":                  varianceOK && disagreementOK,
+			"active_lighthouses":         survive.ActiveLighthouses(),
 		}, nil
 	}
 
@@ -601,13 +602,13 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 	}
 
 	if _, ok := cmd["pair_mode"]; ok {
-		exePath, err := os.Executable()
+		lsDir, err := bundledLibsurvive()
 		if err != nil {
-			return nil, fmt.Errorf("pair_mode: cannot determine executable path: %w", err)
+			return nil, fmt.Errorf("pair_mode: %w", err)
 		}
-		surviveCLI := filepath.Join(filepath.Dir(exePath), "libsurvive", "bin", "survive-cli")
+		surviveCLI := filepath.Join(lsDir, "bin", "survive-cli")
 		if _, err := os.Stat(surviveCLI); err != nil {
-			return nil, fmt.Errorf("pair_mode: survive-cli not found at %s", surviveCLI)
+			return nil, fmt.Errorf("pair_mode: survive-cli not found at %s (module built before survive-cli was bundled?)", surviveCLI)
 		}
 
 		svc.logger.Info("Starting dongle pairing mode...")
@@ -629,10 +630,7 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 		err = pairCmd.Run()
 
 		// Re-acquire libsurvive.
-		pluginLib := filepath.Join(filepath.Dir(exePath), "libsurvive", "lib", "libsurvive.so")
-		if _, statErr := os.Stat(pluginLib); statErr != nil {
-			pluginLib = filepath.Join(filepath.Dir(exePath), "libsurvive", "lib", "libsurvive.dylib")
-		}
+		pluginLib := pluginLibPath(lsDir)
 		for range svc.hands {
 			_ = survive.Acquire(pluginLib)
 		}
@@ -674,10 +672,9 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 		// Lock out the poll loop and force-restart libsurvive.
 		svc.surviveMu.Lock()
 
-		exePath, _ := os.Executable()
-		pluginLib := filepath.Join(filepath.Dir(exePath), "libsurvive", "lib", "libsurvive.so")
-		if _, statErr := os.Stat(pluginLib); statErr != nil {
-			pluginLib = filepath.Join(filepath.Dir(exePath), "libsurvive", "lib", "libsurvive.dylib")
+		pluginLib := ""
+		if lsDir, err := bundledLibsurvive(); err == nil {
+			pluginLib = pluginLibPath(lsDir)
 		}
 		if err := survive.ForceRestart(pluginLib); err != nil {
 			svc.surviveMu.Unlock()
@@ -766,8 +763,8 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 		//   1. Lighthouse disagreement: do the two base stations agree on controller position?
 		//   2. Variance: has each individual lighthouse solve converged?
 		const (
-			varianceThreshold     = 0.001  // max acceptable variance per lighthouse
-			disagreementThreshold = 2.0    // max acceptable inter-LH disagreement (mm)
+			varianceThreshold     = 0.001 // max acceptable variance per lighthouse
+			disagreementThreshold = 2.0   // max acceptable inter-LH disagreement (mm)
 			convergenceTimeout    = 60 * time.Second
 		)
 
@@ -856,12 +853,12 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 		}
 
 		result := map[string]interface{}{
-			"recalibrated":              true,
-			"base_stations_solved":      true,
-			"converged":                 converged,
-			"max_variance":              finalMaxVar,
+			"recalibrated":               true,
+			"base_stations_solved":       true,
+			"converged":                  converged,
+			"max_variance":               finalMaxVar,
 			"lighthouse_disagreement_mm": finalDisagreement,
-			"active_lighthouses":        survive.ActiveLighthouses(),
+			"active_lighthouses":         survive.ActiveLighthouses(),
 		}
 		if converged {
 			svc.logger.Info("Recalibration complete. Use 'calibrate' or trackpad-up to set forward direction.")
@@ -1803,4 +1800,3 @@ func (h *teleopHand) stopTeleop(ctx context.Context) {
 		h.svc.logger.Infof("[%s] session log closed", h.name)
 	}
 }
-

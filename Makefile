@@ -83,7 +83,7 @@ pair: $(LIBSURVIVE_LIB)
 		$(LIBSURVIVE_DIR)/bin/survive-cli --pair-device
 
 module.tar.gz: meta.json $(MODULE_BINARY) run.sh
-	tar czf $@ meta.json $(MODULE_BINARY) run.sh $(LIBSURVIVE_DIR)/lib
+	tar czf $@ meta.json $(MODULE_BINARY) run.sh $(LIBSURVIVE_DIR)/lib $(LIBSURVIVE_DIR)/bin/survive-cli
 
 module: test module.tar.gz
 

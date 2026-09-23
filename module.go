@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -28,8 +26,8 @@ func init() {
 // ButtonAction defines a configurable button action, following the streamdeck pattern.
 type ButtonAction struct {
 	Component string        `json:"component"` // resource short name
-	Method    string        `json:"method"`     // "do_command", "set_position", etc.
-	Args      []interface{} `json:"args"`       // method-specific arguments
+	Method    string        `json:"method"`    // "do_command", "set_position", etc.
+	Args      []interface{} `json:"args"`      // method-specific arguments
 }
 
 type ControllerConfig struct {
@@ -121,14 +119,11 @@ func newViveController(ctx context.Context, deps resource.Dependencies, rawConf 
 
 func NewViveController(ctx context.Context, deps resource.Dependencies, name resource.Name, conf *ControllerConfig, logger logging.Logger) (input.Controller, error) {
 	// Determine plugin path for libsurvive.
-	exePath, err := os.Executable()
-	if err != nil {
-		return nil, fmt.Errorf("cannot determine executable path: %w", err)
-	}
-	exeDir := filepath.Dir(exePath)
-	pluginLib := filepath.Join(exeDir, "libsurvive", "lib", "libsurvive.so")
-	if _, err := os.Stat(pluginLib); err != nil {
-		pluginLib = filepath.Join(exeDir, "libsurvive", "lib", "libsurvive.dylib")
+	pluginLib := ""
+	if lsDir, err := bundledLibsurvive(); err == nil {
+		pluginLib = pluginLibPath(lsDir)
+	} else {
+		logger.Warnf("bundled libsurvive not found, relying on default plugin search: %v", err)
 	}
 
 	if err := survive.Acquire(pluginLib); err != nil {
