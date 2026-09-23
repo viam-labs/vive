@@ -22,6 +22,12 @@
       "model": "viam:vive:capture-control",
       "markdown_link": "README.md#configure-capture-control",
       "short_description": "Data capture control sensor for teleop training data collection"
+    },
+    {
+      "api": "rdk:service:world_state_store",
+      "model": "viam:vive:teleop-visualizer",
+      "markdown_link": "README.md#configure-teleop-visualizer",
+      "short_description": "Renders live teleop state in the Viam app 3D scene"
     }
   ],
   "markdown_link": "README.md",
