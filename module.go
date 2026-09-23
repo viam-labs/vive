@@ -28,8 +28,8 @@ func init() {
 // ButtonAction defines a configurable button action, following the streamdeck pattern.
 type ButtonAction struct {
 	Component string        `json:"component"` // resource short name
-	Method    string        `json:"method"`     // "do_command", "set_position", etc.
-	Args      []interface{} `json:"args"`       // method-specific arguments
+	Method    string        `json:"method"`    // "do_command", "set_position", etc.
+	Args      []interface{} `json:"args"`      // method-specific arguments
 }
 
 type ControllerConfig struct {
