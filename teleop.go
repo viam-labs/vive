@@ -441,8 +441,8 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 		}
 		return map[string]interface{}{
 			"lighthouse_variances": lhVars,
-			"max_variance":        maxVar,
-			"converged":           maxVar > 0 && maxVar < 0.001,
+			"max_variance":         maxVar,
+			"converged":            maxVar > 0 && maxVar < 0.001,
 		}, nil
 	}
 
@@ -470,10 +470,10 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 		disagreementOK := maxDisagreement >= 0 && maxDisagreement < 2.0
 		return map[string]interface{}{
 			"lighthouse_variances":       lhVars,
-			"max_variance":              maxVar,
+			"max_variance":               maxVar,
 			"lighthouse_disagreement_mm": maxDisagreement,
-			"converged":                 varianceOK && disagreementOK,
-			"active_lighthouses":        survive.ActiveLighthouses(),
+			"converged":                  varianceOK && disagreementOK,
+			"active_lighthouses":         survive.ActiveLighthouses(),
 		}, nil
 	}
 
@@ -766,8 +766,8 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 		//   1. Lighthouse disagreement: do the two base stations agree on controller position?
 		//   2. Variance: has each individual lighthouse solve converged?
 		const (
-			varianceThreshold     = 0.001  // max acceptable variance per lighthouse
-			disagreementThreshold = 2.0    // max acceptable inter-LH disagreement (mm)
+			varianceThreshold     = 0.001 // max acceptable variance per lighthouse
+			disagreementThreshold = 2.0   // max acceptable inter-LH disagreement (mm)
 			convergenceTimeout    = 60 * time.Second
 		)
 
@@ -856,12 +856,12 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 		}
 
 		result := map[string]interface{}{
-			"recalibrated":              true,
-			"base_stations_solved":      true,
-			"converged":                 converged,
-			"max_variance":              finalMaxVar,
+			"recalibrated":               true,
+			"base_stations_solved":       true,
+			"converged":                  converged,
+			"max_variance":               finalMaxVar,
 			"lighthouse_disagreement_mm": finalDisagreement,
-			"active_lighthouses":        survive.ActiveLighthouses(),
+			"active_lighthouses":         survive.ActiveLighthouses(),
 		}
 		if converged {
 			svc.logger.Info("Recalibration complete. Use 'calibrate' or trackpad-up to set forward direction.")
@@ -1803,4 +1803,3 @@ func (h *teleopHand) stopTeleop(ctx context.Context) {
 		h.svc.logger.Infof("[%s] session log closed", h.name)
 	}
 }
-
