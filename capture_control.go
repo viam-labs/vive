@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -80,13 +81,18 @@ type captureControl struct {
 	logger logging.Logger
 	cfg    *CaptureControlConfig
 
+	// sequenceFn creates the cloud sequence for a finished session. Indirected so
+	// tests can observe the window without dialing app.viam.com.
+	sequenceFn func(start, end time.Time, tags []string)
+
 	mu            sync.RWMutex
 	capturing     bool
 	captureFreqHz float64
 	task          string
 	sessionTags   []string
 	sessionStart  time.Time
-	activeGrips   int
+	// activeHands maps each hand currently holding a grip to that grip's generation.
+	activeHands map[string]uint64
 }
 
 func newCaptureControl(ctx context.Context, deps resource.Dependencies, rawConf resource.Config, logger logging.Logger) (sensor.Sensor, error) {
@@ -100,12 +106,15 @@ func newCaptureControl(ctx context.Context, deps resource.Dependencies, rawConf 
 		freqHz = 10.0
 	}
 
-	return &captureControl{
+	cc := &captureControl{
 		name:          rawConf.ResourceName(),
 		logger:        logger,
 		cfg:           conf,
 		captureFreqHz: freqHz,
-	}, nil
+		activeHands:   make(map[string]uint64),
+	}
+	cc.sequenceFn = cc.createSequence
+	return cc, nil
 }
 
 func (cc *captureControl) Name() resource.Name {
@@ -144,62 +153,168 @@ func (cc *captureControl) Readings(ctx context.Context, extra map[string]interfa
 	}, nil
 }
 
+// handKey extracts the grip owner from a start/stop-capture payload. Callers that
+// pass a non-string — the legacy {"start-capture": true} form — collapse onto one
+// anonymous owner, preserving single-grip behavior.
+func handKey(v interface{}) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+// gripGeneration extracts the grip generation from a start/stop-capture payload.
+// A generation identifies one press-to-release cycle for a hand, so a teardown
+// message delayed past the operator's next grip can be recognized as stale and
+// ignored rather than ending the new session.
+//
+// DoCommand values round-trip through protobuf Structs, so a number can arrive as
+// float64. Callers that omit "grip" — including the legacy payload form — share
+// generation 0.
+func gripGeneration(v interface{}) uint64 {
+	switch n := v.(type) {
+	case uint64:
+		return n
+	case int64:
+		if n > 0 {
+			return uint64(n)
+		}
+	case int:
+		if n > 0 {
+			return uint64(n)
+		}
+	case float64:
+		if n > 0 {
+			return uint64(n)
+		}
+	}
+	return 0
+}
+
+// handNamesLocked returns the current grip owners, sorted for stable output.
+// Read-only, so an RLock is sufficient.
+func (cc *captureControl) handNamesLocked() []string {
+	names := make([]string, 0, len(cc.activeHands))
+	for n := range cc.activeHands {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// beginSessionLocked opens a capture session. Caller holds mu and has verified
+// !cc.capturing — cc.capturing, not the owner-set size, is the authority for
+// whether a session is open, so the two can never drift into a state where a new
+// session inherits the previous one's tags or start time.
+func (cc *captureControl) beginSessionLocked() {
+	cc.capturing = true
+	cc.sessionStart = time.Now()
+	sessionTag := fmt.Sprintf("session:%s", cc.sessionStart.Format("20060102_150405"))
+	cc.sessionTags = []string{sessionTag}
+	if cc.task != "" {
+		cc.sessionTags = append(cc.sessionTags, fmt.Sprintf("cmd:%s", cc.task))
+	}
+	cc.logger.Infof("capture started: tags=%v freq=%.1fHz", cc.sessionTags, cc.captureFreqHz)
+}
+
+// endSessionLocked closes the current session and returns its window so the caller
+// can create the sequence outside the lock. It clears activeHands so a desynced
+// owner set cannot wedge the next session. Caller holds mu.
+func (cc *captureControl) endSessionLocked() (time.Time, []string) {
+	start, tags := cc.sessionStart, cc.sessionTags
+	cc.capturing = false
+	cc.sessionStart = time.Time{}
+	cc.sessionTags = nil
+	clear(cc.activeHands)
+	return start, tags
+}
+
 func (cc *captureControl) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
-	if _, ok := cmd["start-capture"]; ok {
+	if v, ok := cmd["start-capture"]; ok {
 		cc.mu.Lock()
 		defer cc.mu.Unlock()
 
-		cc.activeGrips++
-		if cc.activeGrips == 1 {
-			cc.capturing = true
-			cc.sessionStart = time.Now()
-			sessionTag := fmt.Sprintf("session:%s", cc.sessionStart.Format("20060102_150405"))
-			cc.sessionTags = []string{sessionTag}
-			if cc.task != "" {
-				cc.sessionTags = append(cc.sessionTags, fmt.Sprintf("cmd:%s", cc.task))
-			}
-			cc.logger.Infof("capture started: tags=%v freq=%.1fHz", cc.sessionTags, cc.captureFreqHz)
+		// Recording the generation lets a stale stop for a previous grip be told
+		// apart from the release of the grip currently held.
+		cc.activeHands[handKey(v)] = gripGeneration(cmd["grip"])
+		if !cc.capturing {
+			cc.beginSessionLocked()
 		}
 
 		return map[string]interface{}{
 			"capturing":    true,
-			"active_grips": cc.activeGrips,
+			"active_grips": len(cc.activeHands),
+			"active_hands": cc.handNamesLocked(),
 			"tags":         cc.sessionTags,
 		}, nil
 	}
 
-	if _, ok := cmd["stop-capture"]; ok {
+	if v, ok := cmd["stop-capture"]; ok {
 		cc.mu.Lock()
-		if cc.activeGrips > 0 {
-			cc.activeGrips--
-		}
-		// Another hand is still driving — keep the session open.
-		if cc.activeGrips > 0 {
-			grips := cc.activeGrips
-			cc.mu.Unlock()
-			return map[string]interface{}{
-				"capturing":    true,
-				"active_grips": grips,
-			}, nil
+		hand, gen := handKey(v), gripGeneration(cmd["grip"])
+
+		// Release the owner only if this stop belongs to the grip we recorded. A stop
+		// for an owner we never had is a no-op, so one hand can never end another
+		// hand's session; and a stop whose generation has been superseded is a
+		// teardown message that arrived after the operator re-gripped, so honouring
+		// it would end the new session and silently stop capturing mid-demonstration.
+		if cur, held := cc.activeHands[hand]; held {
+			if cur == gen {
+				delete(cc.activeHands, hand)
+			} else {
+				cc.logger.Debugf("ignoring stale stop-capture for %q: generation %d, holding %d",
+					hand, gen, cur)
+			}
 		}
 
-		cc.capturing = false
-		start := cc.sessionStart
-		tags := cc.sessionTags
-		cc.sessionTags = nil
-		cc.sessionStart = time.Time{}
+		// Another hand is still driving, or no session was open — leave state alone.
+		if len(cc.activeHands) > 0 || !cc.capturing {
+			resp := map[string]interface{}{
+				"capturing":    cc.capturing,
+				"active_grips": len(cc.activeHands),
+				"active_hands": cc.handNamesLocked(),
+			}
+			cc.mu.Unlock()
+			return resp, nil
+		}
+
+		start, tags := cc.endSessionLocked()
 		cc.mu.Unlock()
 
 		cc.logger.Info("capture stopped")
 
 		if !cc.cfg.DisableSequences && !start.IsZero() {
 			end := time.Now()
-			go cc.createSequence(start, end, tags)
+			go cc.sequenceFn(start, end, tags)
 		}
 
 		return map[string]interface{}{
 			"capturing":    false,
 			"active_grips": 0,
+			"active_hands": []string{},
+		}, nil
+	}
+
+	if _, ok := cmd["reset-capture"]; ok {
+		cc.mu.Lock()
+		wasCapturing := cc.capturing
+		start, tags := cc.endSessionLocked()
+		cc.mu.Unlock()
+
+		// Recovery path: the teleop service can be rebuilt while this sensor stays
+		// alive, leaving owners nothing will ever release. The window's provenance is
+		// unknown — a phantom sessionStart can be hours stale — so discard it rather
+		// than create a garbage sequence. This log line is the leak diagnostic.
+		if wasCapturing {
+			cc.logger.Warnf("capture reset: discarding in-progress session tags=%v start=%s",
+				tags, start.Format(time.RFC3339))
+		}
+
+		return map[string]interface{}{
+			"capturing":     false,
+			"active_grips":  0,
+			"active_hands":  []string{},
+			"was_capturing": wasCapturing,
 		}, nil
 	}
 
@@ -222,7 +337,8 @@ func (cc *captureControl) DoCommand(ctx context.Context, cmd map[string]interfac
 		return map[string]interface{}{
 			"capturing":            cc.capturing,
 			"capture_frequency_hz": cc.captureFreqHz,
-			"active_grips":         cc.activeGrips,
+			"active_grips":         len(cc.activeHands),
+			"active_hands":         cc.handNamesLocked(),
 			"tags":                 cc.sessionTags,
 			"task":                 cc.task,
 		}, nil
@@ -290,7 +406,17 @@ func (cc *captureControl) createSequence(start, end time.Time, tags []string) {
 
 func (cc *captureControl) Close(ctx context.Context) error {
 	cc.mu.Lock()
-	defer cc.mu.Unlock()
-	cc.capturing = false
+	wasCapturing := cc.capturing
+	start, tags := cc.endSessionLocked()
+	cc.mu.Unlock()
+
+	// As with reset-capture, no sequence: on every normal path the hands' teardown
+	// already sent stop-capture and created it. Reaching here with a live session
+	// means something leaked, and createSequence would dial with a 20s timeout
+	// against a shutting-down module.
+	if wasCapturing {
+		cc.logger.Infof("capture control closing: discarding in-progress session tags=%v start=%s",
+			tags, start.Format(time.RFC3339))
+	}
 	return nil
 }
