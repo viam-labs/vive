@@ -285,3 +285,21 @@ func (f *MedianFilter) Reset() {
 	f.idx = 0
 	f.count = 0
 }
+
+// vacuumHysteresisBand is the half-width of the dead band around the vacuum
+// trigger threshold. It prevents a noisy trigger axis from chattering suction
+// on/off near the threshold.
+const vacuumHysteresisBand = 0.1
+
+// vacuumEngaged computes the desired vacuum on/off state from a trigger reading
+// using hysteresis: engage above threshold+band, release below threshold-band,
+// otherwise hold the previous state.
+func vacuumEngaged(trigger, threshold, band float64, prev bool) bool {
+	if trigger > threshold+band {
+		return true
+	}
+	if trigger < threshold-band {
+		return false
+	}
+	return prev
+}
