@@ -94,6 +94,8 @@ type teleopService struct {
 
 	hands []*teleopHand
 
+	pollDone chan struct{}
+
 	// controller discovery state
 	controllersAssigned bool
 	firstControllerSeen time.Time
@@ -252,6 +254,11 @@ func NewTeleopService(ctx context.Context, deps resource.Dependencies, name reso
 		lhTransform:           BaseLighthouseTransform,
 		lastLibsurviveRunning: true,
 		pluginPath:            pluginLib,
+		pollDone:              make(chan struct{}),
+	}
+
+	if err := survive.Acquire(pluginLib); err != nil {
+		return nil, fmt.Errorf("failed to initialize libsurvive: %w", err)
 	}
 
 	// Load calibration.
@@ -276,10 +283,12 @@ func NewTeleopService(ctx context.Context, deps resource.Dependencies, name reso
 	for _, hc := range conf.Hands {
 		ctrl, err := input.FromDependencies(deps, hc.Controller)
 		if err != nil {
+			survive.Release()
 			return nil, fmt.Errorf("controller %q: %w", hc.Controller, err)
 		}
 		vc, ok := ctrl.(*viveController)
 		if !ok {
+			survive.Release()
 			return nil, fmt.Errorf("controller %q is not a vive controller", hc.Controller)
 		}
 		// Inject teleop service into the controller's deps so button actions
@@ -288,6 +297,7 @@ func NewTeleopService(ctx context.Context, deps resource.Dependencies, name reso
 
 		a, err := arm.FromDependencies(deps, hc.Arm)
 		if err != nil {
+			survive.Release()
 			return nil, fmt.Errorf("arm %q: %w", hc.Arm, err)
 		}
 
@@ -371,6 +381,14 @@ func (svc *teleopService) Name() resource.Name {
 
 func (svc *teleopService) Status(ctx context.Context) (map[string]interface{}, error) {
 	return map[string]interface{}{}, nil
+}
+
+// teleopCommands lists every DoCommand key the teleop service handles.
+var teleopCommands = map[string]bool{
+	"adjust_calibration": true, "assign": true, "calibrate": true, "force_z_flip": true,
+	"get_calibration": true, "get_calibration_quality": true, "get_frame_info": true,
+	"get_lighthouse_variance": true, "list_controllers": true, "pair_mode": true,
+	"profiling_stats": true, "recalibrate": true, "set_task": true, "toggle_rotation_mode": true,
 }
 
 func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
@@ -617,9 +635,7 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 		svc.surviveMu.Lock()
 
 		// Release libsurvive so survive-cli can take over USB devices.
-		for range svc.hands {
-			survive.Release()
-		}
+		survive.Suspend()
 
 		pairCtx, pairCancel := context.WithTimeout(ctx, 120*time.Second)
 		defer pairCancel()
@@ -630,12 +646,11 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 		err = pairCmd.Run()
 
 		// Re-acquire libsurvive.
-		pluginLib := pluginLibPath(lsDir)
-		for range svc.hands {
-			_ = survive.Acquire(pluginLib)
+		if rerr := survive.Resume(pluginLibPath(lsDir)); rerr != nil {
+			svc.logger.Errorf("libsurvive restart after pairing failed: %v", rerr)
 		}
 		svc.surviveMu.Unlock()
-		svc.controllersAssigned = false
+		svc.resetDiscovery()
 
 		if err != nil {
 			return nil, fmt.Errorf("pair_mode: %w", err)
@@ -750,7 +765,7 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 		// Release the lock so the poll loop resumes — it feeds the solver
 		// new measurement data as the user waves controllers around.
 		svc.surviveMu.Unlock()
-		svc.controllersAssigned = false
+		svc.resetDiscovery()
 
 		if !solved {
 			svc.frameChecked.Store(false)
@@ -904,7 +919,21 @@ func (svc *teleopService) Close(ctx context.Context) error {
 			h.stopTeleop(closeCtx)
 		}
 	}
+	select {
+	case <-svc.pollDone:
+	case <-closeCtx.Done():
+		svc.logger.Warn("poll loop did not stop before close; skipping libsurvive release")
+		return nil
+	}
+	survive.Release()
 	return nil
+}
+
+// resetDiscovery forces controller re-discovery after libsurvive was re-initialized.
+func (svc *teleopService) resetDiscovery() {
+	svc.controllersAssigned = false
+	svc.firstControllerSeen = time.Time{}
+	svc.serialWaitLogged = false
 }
 
 // ---------------------------------------------------------------------------
@@ -1167,6 +1196,7 @@ func (svc *teleopService) discoverAndAssignControllers() {
 // ---------------------------------------------------------------------------
 
 func (svc *teleopService) pollLoop(ctx context.Context, hz int) {
+	defer close(svc.pollDone)
 	interval := time.Duration(float64(time.Second) / float64(hz))
 	svc.logger.Infof("Polling at %d Hz (%.1f ms)", hz, float64(interval)/float64(time.Millisecond))
 
@@ -1177,7 +1207,11 @@ func (svc *teleopService) pollLoop(ctx context.Context, hz int) {
 
 		// Skip this iteration if libsurvive is being restarted (recalibrate/pair).
 		if !svc.surviveMu.TryLock() {
-			time.Sleep(interval)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(interval):
+			}
 			continue
 		}
 
@@ -1241,7 +1275,7 @@ func (svc *teleopService) pollLoop(ctx context.Context, hz int) {
 			} else {
 				svc.logger.Infof("libsurvive restarted successfully")
 				svc.lastLibsurviveRunning = true
-				svc.controllersAssigned = false
+				svc.resetDiscovery()
 				svc.frameChecked.Store(false)
 				svc.restartAttempts = 0
 			}

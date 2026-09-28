@@ -16,9 +16,9 @@ package survive
 
 static SurviveSimpleContext *gCtx = NULL;
 
-// Log callback that suppresses noisy libsurvive output.
+// Log callback that suppresses noisy libsurvive output. Warnings are kept:
+// USB open/claim failures and device disconnects are reported at that level.
 static void vr_log_fn(struct SurviveSimpleContext *ctx, SurviveLogLevel logLevel, const char *msg) {
-    if (logLevel == SURVIVE_LOG_LEVEL_WARNING) return;
     if (msg && (strstr(msg, "OOTX") || strstr(msg, "Bad sync") || strstr(msg, "Preamble"))) return;
     printf("%s", msg);
 }
@@ -73,7 +73,17 @@ static void fix_position_set(void) {
     }
 }
 
+static int vr_has_ctx(void) {
+    return gCtx != NULL;
+}
+
 static int vr_init(const char *pluginPath) {
+    static int stdoutLineBuffered = 0;
+    if (gCtx) return 0;
+    if (!stdoutLineBuffered) {
+        setvbuf(stdout, NULL, _IOLBF, 0);
+        stdoutLineBuffered = 1;
+    }
     if (pluginPath && pluginPath[0]) {
         setenv("SURVIVE_PLUGINS", pluginPath, 1);
     }
@@ -335,7 +345,7 @@ func Acquire(pluginPath string) error {
 	mu.Lock()
 	defer mu.Unlock()
 	refCount++
-	if refCount == 1 {
+	if refCount == 1 && C.vr_has_ctx() == 0 {
 		cPath := C.CString(pluginPath)
 		defer C.free(unsafe.Pointer(cPath))
 		if C.vr_init(cPath) != 0 {
@@ -364,8 +374,29 @@ func Release() {
 func ForceRestart(pluginPath string) error {
 	mu.Lock()
 	defer mu.Unlock()
-	if refCount > 0 {
-		C.vr_shutdown()
+	C.vr_shutdown()
+	cPath := C.CString(pluginPath)
+	defer C.free(unsafe.Pointer(cPath))
+	if C.vr_init(cPath) != 0 {
+		return fmt.Errorf("libsurvive re-initialization failed")
+	}
+	return nil
+}
+
+// Suspend shuts libsurvive down without touching the reference count so an
+// external process (survive-cli pairing) can take over the USB devices.
+func Suspend() {
+	mu.Lock()
+	defer mu.Unlock()
+	C.vr_shutdown()
+}
+
+// Resume re-initializes libsurvive after Suspend if anyone still holds a reference.
+func Resume(pluginPath string) error {
+	mu.Lock()
+	defer mu.Unlock()
+	if refCount == 0 {
+		return nil
 	}
 	cPath := C.CString(pluginPath)
 	defer C.free(unsafe.Pointer(cPath))

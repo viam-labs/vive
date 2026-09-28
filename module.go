@@ -45,6 +45,25 @@ type ControllerConfig struct {
 
 const defaultTriggerMedianWindow = 5
 
+// isTeleopAction reports whether a button action targets the teleop service,
+// judged by the command keys it sends. The teleop service injects itself into
+// its controllers, so declaring it as a dependency would create a rebuild cycle.
+func isTeleopAction(action *ButtonAction) bool {
+	if action.Method != "do_command" || len(action.Args) == 0 {
+		return false
+	}
+	m, ok := action.Args[0].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	for k := range m {
+		if teleopCommands[k] {
+			return true
+		}
+	}
+	return false
+}
+
 func (cfg *ControllerConfig) Validate(path string) ([]string, []string, error) {
 	var deps []string
 	seen := map[string]bool{}
@@ -52,7 +71,7 @@ func (cfg *ControllerConfig) Validate(path string) ([]string, []string, error) {
 		cfg.MenuAction, cfg.TrackpadUpAction, cfg.TrackpadDownAction,
 		cfg.TrackpadLeftAction, cfg.TrackpadRightAction,
 	} {
-		if action == nil || seen[action.Component] {
+		if action == nil || seen[action.Component] || isTeleopAction(action) {
 			continue
 		}
 		seen[action.Component] = true
