@@ -81,6 +81,10 @@ Returns:
       "arm": "right-arm",
       // optional — gripper component, trigger controls proportional grip
       "gripper": "right-gripper",
+      // optional — "proportional" (default) or "vacuum"; vacuum makes the trigger engage suction past a threshold
+      "gripper_type": "vacuum",
+      // optional — trigger fraction, greater than 0.1 and less than 0.9, to engage vacuum suction; default 0.5
+      "vacuum_threshold": 0.5,
       // default: 1.0 — position multiplier (2.0 = arm moves 2x your hand)
       "scale": 1.0,
       // default: true — enable orientation tracking
@@ -109,7 +113,7 @@ Returns:
 ### VR Controls
 
 - **Grip** — deadman's switch. Arm moves only while held.
-- **Trigger** — proportional gripper control. Mirrors trigger pull.
+- **Trigger** — gripper control. For a proportional gripper (default), mirrors trigger pull. For `gripper_type: "vacuum"`, acts as on/off: pull past `vacuum_threshold` to engage suction (hold to keep holding the part), release to drop. Suction is independent of the grip button and is not released when arm control stops.
 - **Menu** — returns arm to previous start pose.
 - **Trackpad up** — recalibrate forward direction to current controller heading.
 - **Trackpad down** — toggle absolute/relative rotation tracking.

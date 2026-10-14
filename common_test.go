@@ -111,3 +111,66 @@ func TestMedianFilter_NilSafe(t *testing.T) {
 	}
 	f.Reset() // must not panic
 }
+
+func TestVacuumEngaged(t *testing.T) {
+	const threshold, band = 0.5, 0.1
+	tests := []struct {
+		name    string
+		trigger float64
+		prev    bool
+		want    bool
+	}{
+		{"engages above upper bound", 0.65, false, true},
+		{"holds off inside band", 0.55, false, false},
+		{"holds on inside band", 0.45, true, true},
+		{"releases below lower bound", 0.35, true, false},
+		{"exactly at threshold holds prev", 0.5, false, false},
+		{"exactly at threshold holds prev on", 0.5, true, true},
+		{"full pull engages", 1.0, false, true},
+		{"released disengages", 0.0, true, false},
+		{"at upper edge holds prev off", 0.6, false, false},
+		{"at lower edge holds prev on", 0.4, true, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := vacuumEngaged(tc.trigger, threshold, band, tc.prev); got != tc.want {
+				t.Errorf("vacuumEngaged(%v, %v, %v, %v) = %v, want %v",
+					tc.trigger, threshold, band, tc.prev, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTeleopConfigValidate_GripperType(t *testing.T) {
+	base := func(gt string) *TeleopConfig {
+		return &TeleopConfig{Hands: []HandConfig{
+			{Name: "r", Controller: "c", Arm: "a", GripperType: gt},
+		}}
+	}
+	for _, gt := range []string{"", "proportional", "vacuum"} {
+		if _, _, err := base(gt).Validate("p"); err != nil {
+			t.Errorf("gripper_type %q: unexpected error %v", gt, err)
+		}
+	}
+	if _, _, err := base("magnet").Validate("p"); err == nil {
+		t.Error("gripper_type \"magnet\": expected validation error, got nil")
+	}
+}
+
+func TestTeleopConfigValidate_VacuumThreshold(t *testing.T) {
+	base := func(vt float64) *TeleopConfig {
+		return &TeleopConfig{Hands: []HandConfig{
+			{Name: "r", Controller: "c", Arm: "a", GripperType: "vacuum", VacuumThreshold: vt},
+		}}
+	}
+	for _, vt := range []float64{0, 0.5, 0.2, 0.8} {
+		if _, _, err := base(vt).Validate("p"); err != nil {
+			t.Errorf("vacuum_threshold %v: unexpected error %v", vt, err)
+		}
+	}
+	for _, vt := range []float64{1.5, -0.1, 0.05, 0.95, 0.1, 0.9} {
+		if _, _, err := base(vt).Validate("p"); err == nil {
+			t.Errorf("vacuum_threshold %v: expected validation error, got nil", vt)
+		}
+	}
+}
