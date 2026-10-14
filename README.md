@@ -309,6 +309,32 @@ Returns:
 {"capturing": false, "capture_frequency_hz": 10, "tags": null, "task": "pick up the red block"}
 ```
 
+## Configure teleop-visualizer
+
+The teleop-visualizer service publishes live teleop state as transforms so the Viam app's 3D scene renders it: a box for the lighthouse/calibration frame, a sphere for each tracked controller, and a box for a hand's commanded arm pose that appears while gripping and disappears on release. It's a debugging aid — use it to sanity-check tracking and calibration, not as a feature to build on.
+
+```jsonc
+{
+  "name": "teleop-viz",
+  "api": "rdk:service:world_state_store",
+  "model": "viam:vive:teleop-visualizer",
+  "attributes": {
+    // required — name of the teleop service to visualize
+    "teleop_service": "teleop",
+    // default: 20 — transform refresh rate in Hz
+    "publish_rate_hz": 20,
+    // default: 500 — snapshot age (ms) past which a hand is treated as dead and its geometry removed
+    "stale_after_ms": 500,
+    // default: [0, 0, 0] — cosmetic [x, y, z] offset (mm) applied to the lighthouse frame only
+    "lighthouse_offset_mm": [0, 0, 0]
+  }
+}
+```
+
+The visualizer must be configured on the same machine, in the same module, as the `teleop_service` it names — it needs an in-process handle to read that service's snapshots directly, and construction fails with an explicit error if the named service doesn't resolve to one.
+
+The lighthouse frame renders at the world origin, because the system has no translational calibration, only rotational. So tracked controllers render at their physical offset from the *tracking* origin, which may be a metre or two from the robot. `lighthouse_offset_mm` exists purely to nudge the lighthouse box for readability in the scene; it has no effect on teleop itself.
+
 ## Getting Started
 
 ### 1. Install dependencies
