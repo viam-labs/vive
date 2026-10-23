@@ -263,7 +263,7 @@ func (cc *captureControl) createSequence(start, end time.Time, tags []string) {
 		cc.logger.Warnf("sequence creation failed to dial app: %v", err)
 		return
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	var resources []*datapb.SequenceResourceFilter
 	for _, rm := range cc.cfg.resourceMethods() {
