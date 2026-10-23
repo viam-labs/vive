@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # The checks are spelled out rather than delegated to `make lint`: the
+  # Makefile's lint target runs `gofmt -s -w`, which rewrites files instead of
+  # failing when they are unformatted.
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      # actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Install system packages
+        run: sudo apt-get update && sudo apt-get install -y cmake libusb-1.0-0-dev zlib1g-dev libeigen3-dev
+
+      # The survive package's cgo code builds against libsurvive, which the
+      # Makefile builds from source into ./libsurvive; lint typechecks it too.
+      - name: Build libsurvive
+        run: make libsurvive/lib/libsurvive.so
+
+      # actions/setup-go@v7.0.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+
+      # golangci/golangci-lint-action@v9.3.0
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a
+        with:
+          version: v2.14.0
+
+      - name: go mod tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Install system packages
+        run: sudo apt-get update && sudo apt-get install -y cmake libusb-1.0-0-dev zlib1g-dev libeigen3-dev
+
+      # The survive package's cgo code builds against libsurvive, which the
+      # Makefile builds from source into ./libsurvive; lint typechecks it too.
+      - name: Build libsurvive
+        run: make libsurvive/lib/libsurvive.so
+
+      # actions/setup-go@v7.0.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: make build
+
+      # An explicit -timeout so a test blocked on hardware that isn't there
+      # fails fast instead of holding the runner for Go's 10-minute default.
+      - name: Test
+        run: go test -race -timeout 5m ./...

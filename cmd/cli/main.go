@@ -69,7 +69,7 @@ func realMain() error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to robot: %w", err)
 	}
-	defer robot.Close(ctx)
+	defer func() { _ = robot.Close(ctx) }()
 	logger.Info("Connected to robot")
 
 	exePath, err := os.Executable()
@@ -83,39 +83,39 @@ func realMain() error {
 	if err != nil {
 		return fmt.Errorf("left controller: %w", err)
 	}
-	defer leftCtrl.Close(ctx)
+	defer func() { _ = leftCtrl.Close(ctx) }()
 
 	rightCtrl, err := vive.NewViveController(ctx, nil, input.Named("right-vive"), &vive.ControllerConfig{}, logger)
 	if err != nil {
 		return fmt.Errorf("right controller: %w", err)
 	}
-	defer rightCtrl.Close(ctx)
+	defer func() { _ = rightCtrl.Close(ctx) }()
 
 	// Resolve arm/gripper/motion from robot client.
-	leftArmRes, err := arm.FromRobot(robot, *leftArm)
+	leftArmRes, err := arm.FromProvider(robot, *leftArm)
 	if err != nil {
 		return fmt.Errorf("left arm %q: %w", *leftArm, err)
 	}
-	rightArmRes, err := arm.FromRobot(robot, *rightArm)
+	rightArmRes, err := arm.FromProvider(robot, *rightArm)
 	if err != nil {
 		return fmt.Errorf("right arm %q: %w", *rightArm, err)
 	}
 
 	var leftGripperRes, rightGripperRes gripper.Gripper
 	if *leftGripper != "" {
-		leftGripperRes, err = gripper.FromRobot(robot, *leftGripper)
+		leftGripperRes, err = gripper.FromProvider(robot, *leftGripper)
 		if err != nil {
 			logger.Warnf("left gripper %q: %v", *leftGripper, err)
 		}
 	}
 	if *rightGripper != "" {
-		rightGripperRes, err = gripper.FromRobot(robot, *rightGripper)
+		rightGripperRes, err = gripper.FromProvider(robot, *rightGripper)
 		if err != nil {
 			logger.Warnf("right gripper %q: %v", *rightGripper, err)
 		}
 	}
 
-	motionSvc, err := motion.FromRobot(robot, "builtin")
+	motionSvc, err := motion.FromProvider(robot, "builtin")
 	if err != nil {
 		logger.Warnf("motion service: %v", err)
 	}
@@ -168,7 +168,7 @@ func realMain() error {
 	if err != nil {
 		return fmt.Errorf("teleop service: %w", err)
 	}
-	defer teleopSvc.Close(ctx)
+	defer func() { _ = teleopSvc.Close(ctx) }()
 
 	logger.Info("Teleop service started")
 
