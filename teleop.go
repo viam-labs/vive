@@ -266,7 +266,7 @@ func NewTeleopService(ctx context.Context, deps resource.Dependencies, name reso
 
 	// Resolve capture control sensor if configured.
 	if conf.CaptureControlSensor != "" {
-		capSensor, err := sensor.FromDependencies(deps, conf.CaptureControlSensor)
+		capSensor, err := sensor.FromProvider(deps, conf.CaptureControlSensor)
 		if err != nil {
 			logger.Warnf("capture control sensor %q not available: %v", conf.CaptureControlSensor, err)
 		} else {
@@ -275,13 +275,13 @@ func NewTeleopService(ctx context.Context, deps resource.Dependencies, name reso
 	}
 
 	// Resolve dependencies and create hands.
-	motionSvc, err := motion.FromDependencies(deps, "builtin")
+	motionSvc, err := motion.FromProvider(deps, "builtin")
 	if err != nil {
 		logger.Warnf("motion service not available: %v", err)
 	}
 
 	for _, hc := range conf.Hands {
-		ctrl, err := input.FromDependencies(deps, hc.Controller)
+		ctrl, err := input.FromProvider(deps, hc.Controller)
 		if err != nil {
 			survive.Release()
 			return nil, fmt.Errorf("controller %q: %w", hc.Controller, err)
@@ -295,7 +295,7 @@ func NewTeleopService(ctx context.Context, deps resource.Dependencies, name reso
 		// targeting this service can resolve it (avoids circular dep in graph).
 		vc.InjectDep(svc.name, svc)
 
-		a, err := arm.FromDependencies(deps, hc.Arm)
+		a, err := arm.FromProvider(deps, hc.Arm)
 		if err != nil {
 			survive.Release()
 			return nil, fmt.Errorf("arm %q: %w", hc.Arm, err)
@@ -303,7 +303,7 @@ func NewTeleopService(ctx context.Context, deps resource.Dependencies, name reso
 
 		var g gripper.Gripper
 		if hc.Gripper != "" {
-			g, err = gripper.FromDependencies(deps, hc.Gripper)
+			g, err = gripper.FromProvider(deps, hc.Gripper)
 			if err != nil {
 				logger.Warnf("gripper %q not available: %v", hc.Gripper, err)
 			}
@@ -607,9 +607,10 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 		cm := loadControllerMap(svc.calibDir)
 		for i, h := range svc.hands {
 			if h == targetHand {
-				if i == 0 {
+				switch i {
+				case 0:
 					cm.Left = serial
-				} else if i == 1 {
+				case 1:
 					cm.Right = serial
 				}
 			}
@@ -682,7 +683,9 @@ func (svc *teleopService) DoCommand(ctx context.Context, cmd map[string]interfac
 		svc.calibSet = false
 		svc.calibMu.Unlock()
 		calibPath := filepath.Join(svc.calibDir, "calibration.json")
-		os.Remove(calibPath)
+		if err := os.Remove(calibPath); err != nil && !os.IsNotExist(err) {
+			svc.logger.Warnf("Failed to remove calibration file: %v", err)
+		}
 
 		// Lock out the poll loop and force-restart libsurvive.
 		svc.surviveMu.Lock()
@@ -1024,7 +1027,9 @@ func loadControllerMap(dir string) controllerMapData {
 	if err != nil {
 		return m
 	}
-	json.Unmarshal(b, &m)
+	if err := json.Unmarshal(b, &m); err != nil {
+		return controllerMapData{}
+	}
 	return m
 }
 
@@ -1129,9 +1134,10 @@ func (svc *teleopService) discoverAndAssignControllers() {
 			continue
 		}
 		var savedSerial string
-		if i == 0 {
+		switch i {
+		case 0:
 			savedSerial = cm.Left
-		} else if i == 1 {
+		case 1:
 			savedSerial = cm.Right
 		}
 		if savedSerial != "" {
@@ -1789,7 +1795,7 @@ func toFloat64(v interface{}) float64 {
 func (h *teleopHand) writeLog(line string) {
 	h.logMu.Lock()
 	if h.logWriter != nil {
-		h.logWriter.WriteString(line)
+		_, _ = h.logWriter.WriteString(line)
 	}
 	h.logMu.Unlock()
 }
@@ -1798,7 +1804,7 @@ func (h *teleopHand) writeLog(line string) {
 func (h *teleopHand) flushLog() {
 	h.logMu.Lock()
 	if h.logWriter != nil {
-		h.logWriter.Flush()
+		_ = h.logWriter.Flush()
 	}
 	h.logMu.Unlock()
 }
@@ -1825,11 +1831,13 @@ func (h *teleopHand) stopTeleop(ctx context.Context) {
 	if h.logFile != nil {
 		h.logMu.Lock()
 		if h.logWriter != nil {
-			h.logWriter.Flush()
+			_ = h.logWriter.Flush()
 		}
 		h.logWriter = nil
 		h.logMu.Unlock()
-		h.logFile.Close()
+		if err := h.logFile.Close(); err != nil {
+			h.svc.logger.Warnf("[%s] failed to close session log: %v", h.name, err)
+		}
 		h.logFile = nil
 		h.svc.logger.Infof("[%s] session log closed", h.name)
 	}
